@@ -1,0 +1,130 @@
+# Configuration for Metashape automated reconstruction
+
+# GPS/RTK configuration
+gps:
+  enabled: true
+  use_rtk: true
+
+# Image quality analysis
+image_quality:
+  # Filter out images below this quality threshold (0.0-1.0)
+  quality_threshold: 0.70
+
+# Photo matching parameters
+photo_matching:
+  downscale: 1
+  downscale_3d: 2
+  keypoint_limit: 60000
+  keypoint_limit_3d: 150000
+  keypoint_limit_per_mpx: 1500
+  tiepoint_limit: 0
+  generic_preselection: false
+  reference_preselection: true
+  filter_mask: false
+  mask_tiepoints: true
+  filter_stationary_points: true
+  keep_keypoints: true
+  guided_matching: true
+  subdivide_task: false
+
+# Camera alignment and optimization
+camera:
+  # Initial alignment parameters
+  align:
+    adaptive_fitting: false
+    min_image: 2
+  
+  # Camera optimization parameters
+  optimize:
+    fit_f: true
+    fit_cx: true
+    fit_cy: true
+    fit_k1: true
+    fit_k2: true
+    fit_k3: true
+    fit_k4: true
+    fit_p1: true
+    fit_p2: true
+    fit_b1: true
+    fit_b2: true
+    fit_corrections: true
+    tiepoint_covariance: true
+
+# Tie point filtering
+tie_point_filtering:
+  # USGS-recommended filtering thresholds
+  reconstruction_uncertainty:
+    percentile: 20
+    min_threshold: 15.0
+  
+  projection_accuracy:
+    percentile: 30
+    min_threshold: 2.0
+  
+  reprojection_error:
+    percentile: 5
+    min_threshold: 0.3
+
+# Depth maps parameters
+depth_maps:
+  downscale: 2
+  filter_mode: "disabled"  # Options: "mild", "moderate", "aggressive", "disabled"
+  reuse_depth: false
+  max_neighbors: 64
+  max_gpu_multiplier: 24
+  subdivide_task: false
+
+# Point cloud parameters
+point_cloud:
+  source_data: "depth_maps" 
+  point_colors: true
+  point_confidence: true
+  keep_depth: true
+  max_neighbors: 64
+  subdivide_task: false
+  
+  # Export parameters
+  export:
+    save_point_color: true
+    save_point_normal: true
+    save_point_confidence: true
+    format: "las" # Options: "las", "laz", "e57", "ply", "xyz"
+
+# Ground point classification parameters
+classify_ground_points:
+  max_angle: 15.0
+  max_distance: 1.0
+  cell_size: 50.0
+
+# Mesh parameters
+model:
+  subdivide_task: false
+  vertex_colors: false
+  vertex_confidence: true
+  keep_depth: true
+
+# DEM parameters (DTM, DSM, CHM)
+dem:
+  resolution: 0  # 0 = auto
+  tiff_big: true
+  tiff_tiled: false
+  tiff_overviews: true
+  subdivide_task: false
+  nodata: -32767
+
+# Orthomosaic parameters
+orthomosaic:
+  blending_mode: "mosaic"
+  ghosting_filter: false
+  fill_holes: true
+  cull_faces: false
+  refine_seamlines: true
+  subdivide_task: false
+  
+  # Export parameters
+  export:
+    tiff_big: true
+    tiff_tiled: true
+    tiff_overviews: true
+    white_background: false
+    nodata: -32767
