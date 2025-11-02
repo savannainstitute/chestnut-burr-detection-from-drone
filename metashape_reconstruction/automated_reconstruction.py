@@ -295,7 +295,7 @@ def main():
         else:
             print("Tie points already exist, skipping matching/alignment/filtering...")
         
-        # Depth maps
+       # Depth maps
         if not status['depth_maps_built']:
             try:
                 print("Building depth maps...")
@@ -332,73 +332,77 @@ def main():
         else:
             print("Depth maps already built, skipping...")
 
+        # Check if transform is valid before geometry-dependent steps
+        if not has_valid_transform(chunk):
+            print("No valid transform found. Cannot proceed with point cloud, model, or DEM generation.")
+            sys.exit(1)
+
         # Point cloud
         if not status['point_cloud_built']:
             try:
-                if has_valid_transform(chunk):
-                    # Convert source_data from string to Metashape enum
-                    source_data_str = config['point_cloud']['source_data'].lower()
-                    if source_data_str == "depth_maps":
-                        source_data = Metashape.DataSource.DepthMapsData
-                    else:
-                        source_data = Metashape.DataSource.PointCloudData # tie points (sparse cloud)
+                # Convert source_data from string to Metashape enum
+                source_data_str = config['point_cloud']['source_data'].lower()
+                if source_data_str == "depth_maps":
+                    source_data = Metashape.DataSource.DepthMapsData
+                else:
+                    source_data = Metashape.DataSource.PointCloudData # tie points (sparse cloud)
 
-                    # Build point cloud
-                    print("Building dense cloud...")
-                    chunk.buildPointCloud(
-                        source_data=source_data, 
-                        point_colors=config['point_cloud']['point_colors'], 
-                        point_confidence=config['point_cloud']['point_confidence'], 
-                        keep_depth=config['point_cloud']['keep_depth'],
-                        max_neighbors=config['point_cloud']['max_neighbors'],
-                        subdivide_task=config['point_cloud']['subdivide_task'],
-                        progress=progress_timer.update
-                    ) 
-                    progress_timer.reset()
-                    doc.save()
-                    print("Point cloud finished building.")
-                    
-                    # Classify ground points
-                    print("Classifying ground points...")
-                    ground_config = config['classify_ground_points']
-                    chunk.point_cloud.classifyGroundPoints(
-                        max_angle=ground_config['max_angle'],
-                        max_distance=ground_config['max_distance'], 
-                        cell_size=ground_config['cell_size'],
-                        progress=progress_timer.update
-                    )
-                    progress_timer.reset()
-                    doc.save()
-                    print("Ground points classified.")
+                # Build point cloud
+                print("Building dense cloud...")
+                chunk.buildPointCloud(
+                    source_data=source_data, 
+                    point_colors=config['point_cloud']['point_colors'], 
+                    point_confidence=config['point_cloud']['point_confidence'], 
+                    keep_depth=config['point_cloud']['keep_depth'],
+                    max_neighbors=config['point_cloud']['max_neighbors'],
+                    subdivide_task=config['point_cloud']['subdivide_task'],
+                    progress=progress_timer.update
+                ) 
+                progress_timer.reset()
+                doc.save()
+                print("Point cloud finished building.")
+                
+                # Classify ground points
+                print("Classifying ground points...")
+                ground_config = config['classify_ground_points']
+                chunk.point_cloud.classifyGroundPoints(
+                    max_angle=ground_config['max_angle'],
+                    max_distance=ground_config['max_distance'], 
+                    cell_size=ground_config['cell_size'],
+                    progress=progress_timer.update
+                )
+                progress_timer.reset()
+                doc.save()
+                print("Ground points classified.")
 
-                    # Export point cloud
-                    pc_file = os.path.join(output_folder, f"{lowest_folder_name}_point_cloud.{config['point_cloud']['export']['format']}")
-                    
-                    # Convert format from string to Metashape enum
-                    format_str = config['point_cloud']['export']['format'].lower()
-                    if format_str == "las":
-                        export_format = Metashape.PointCloudFormat.PointCloudFormatLAS
-                    elif format_str == "laz":
-                        export_format = Metashape.PointCloudFormat.PointCloudFormatLAZ
-                    elif format_str == "e57":
-                        export_format = Metashape.PointCloudFormat.PointCloudFormatE57
-                    elif format_str == "ply":
-                        export_format = Metashape.PointCloudFormat.PointCloudFormatPLY
-                    else:
-                        export_format = Metashape.PointCloudFormat.PointCloudFormatXYZ
-                    
-                    chunk.exportPointCloud(
-                        pc_file, 
-                        source_data=Metashape.DataSource.PointCloudData, 
-                        save_point_color=config['point_cloud']['export']['save_point_color'],
-                        save_point_normal=config['point_cloud']['export']['save_point_normal'],
-                        save_point_confidence=config['point_cloud']['export']['save_point_confidence'],
-                        format=export_format,
-                        crs=chunk.crs,
-                        progress=progress_timer.update
-                    )
-                    progress_timer.reset()
-                    print("Point cloud exported.")
+                # Export point cloud
+                pc_file = os.path.join(output_folder, f"{lowest_folder_name}_point_cloud.{config['point_cloud']['export']['format']}")
+                
+                # Convert format from string to Metashape enum
+                format_str = config['point_cloud']['export']['format'].lower()
+                if format_str == "las":
+                    export_format = Metashape.PointCloudFormat.PointCloudFormatLAS
+                elif format_str == "laz":
+                    export_format = Metashape.PointCloudFormat.PointCloudFormatLAZ
+                elif format_str == "e57":
+                    export_format = Metashape.PointCloudFormat.PointCloudFormatE57
+                elif format_str == "ply":
+                    export_format = Metashape.PointCloudFormat.PointCloudFormatPLY
+                else:
+                    export_format = Metashape.PointCloudFormat.PointCloudFormatXYZ
+                
+                chunk.exportPointCloud(
+                    pc_file, 
+                    source_data=Metashape.DataSource.PointCloudData, 
+                    save_point_color=config['point_cloud']['export']['save_point_color'],
+                    save_point_normal=config['point_cloud']['export']['save_point_normal'],
+                    save_point_confidence=config['point_cloud']['export']['save_point_confidence'],
+                    format=export_format,
+                    crs=chunk.crs,
+                    progress=progress_timer.update
+                )
+                progress_timer.reset()
+                print("Point cloud exported.")
             except Exception as e:
                 print(f"Error building point cloud: {e}")
                 sys.exit(1)
