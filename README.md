@@ -1,5 +1,5 @@
 # chestnut-burr-detection-from-drone
-Python code for estimating per-tree chestnut burr yield in drone imagery
+Python code for estimating burr yield for chestnut trees in drone imagery
 
 Contents:
 
