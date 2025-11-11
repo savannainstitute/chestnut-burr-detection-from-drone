@@ -1,0 +1,15 @@
+name: burr-detection
+channels:
+  - conda-forge
+dependencies:
+  - gdal=3.10.3
+  - geopandas=1.1.1
+  - python=3.11.14
+  - pip=25.2
+  - rasterio=1.4.3
+  - scikit-image=0.25.2
+  - shapely=2.1.2
+  - yaml=0.2.5
+  - pip:
+    - easyidp
+    - pyexiv2
