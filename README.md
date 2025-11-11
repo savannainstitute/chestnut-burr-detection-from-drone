@@ -53,8 +53,8 @@ Sample data for a chestnut orchard is available via Google Drive as a ZIP file.
     ```
     pip install flight_reconstruction/Metashape-2.2.2-cp37.cp38.cp39.cp310.cp311-none-win_amd64.whl
     ```
-5. **Activate a Metashape Professional license.** (See Agisoft documentation.)
-6. **Download and extract the sample data from Google Drive** (see above), preserving the folder structure.
+5. **Activate a Metashape Professional license.** (See Agisoft documentation)
+6. **Download and extract the sample data from Google Drive** (see above).
 
 ---
 
@@ -113,7 +113,7 @@ Segment individual tree canopies from the CHM using a proximity-based watershed 
 ```
 python canopy_segmentation/segmentation.py \
     --chm flight_reconstruction/sample_data/20230823_Orchard4/outputs/20230823_Orchard4_chm.tif \
-    --tree-markers canopy_segmentation/sample_data/inputs/20230823_Orchard4_tree_markers.shp
+    --tree-markers canopy_segmentation/sample_data/inputs/20230823_Orchard4_tree_markers.shp \
     --extent canopy_segmentation/sample_data/inputs/20230823_Orchard4_boundary.shp \
     --outdir canopy_segmentation/sample_data/outputs/
 ```
