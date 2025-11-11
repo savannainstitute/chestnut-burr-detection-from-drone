@@ -6,7 +6,7 @@ import time
 import yaml
 import argparse
 
-from metashape_utils import *
+from flight_reconstruction.utils import *
 
 def load_config(config_path):
     """Load configuration from YAML file"""
