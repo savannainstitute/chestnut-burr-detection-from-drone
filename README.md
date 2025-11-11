@@ -8,7 +8,7 @@ Pipeline for estimating chestnut tree burr yield using drone imagery.
 
 This repository contains a modular pipeline for estimating chestnut tree burr yield from drone imagery. The pipeline consists of the following steps:
 
-1. **Flight Reconstruction**: Generate georeferenced orthomosaics, digital surface models (DSM), and point clouds from drone imagery using Agisoft Metashape.
+1. **Flight Reconstruction**: Generate georeferenced orthomosaics, elevation surfaces (DSM/DTM/CHM), and point clouds from drone imagery using Agisoft Metashape.
 2. **Canopy Segmentation**: Segment individual tree canopies from the DSM using proximity-based and morphological methods.
 3. **Image Selection**: Select the best drone image for each segmented canopy using image quality and sensor parameters.
 4. **Burr Detection**: (Coming soon) Detect and count burrs for each tree.
