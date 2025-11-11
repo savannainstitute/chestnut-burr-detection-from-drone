@@ -9,7 +9,7 @@ from skimage import io, color, filters, draw
 import pyexiv2
 import argparse
 
-# --- Parse CLI arguments ---
+# Parse CLI arguments
 parser = argparse.ArgumentParser(description="Select best images for each canopy using 3D geometry and image metadata.")
 parser.add_argument("--canopy_shapefile", type=str, required=True, help="Path to canopy polygons shapefile (.shp)")
 parser.add_argument("--dsm", type=str, required=True, help="Path to DSM raster (.tif)")
@@ -24,26 +24,26 @@ metashape_path = args.metashape_project
 raw_images_folder_path = args.raw_images
 output_folder_path = args.output
 
-# --- Convert shapefile to geojson ---
+# Convert shapefile to geojson
 gdf = gpd.read_file(shapefile_path)
 geojson_path = shapefile_path.replace(".shp", ".geojson")
 gdf.to_file(geojson_path, driver="GeoJSON")
 
-# --- Load canopy polygons ---
+# Load canopy polygons
 roi = idp.ROI()
 roi.read_geojson(geojson_path, name_field="tree_id")
 
-# --- Load DSM and add z values to polygons ---
+# Load DSM and add z values to polygons
 dsm = idp.GeoTiff(dsm_path)
 roi.get_z_from_dsm(dsm)
 
-# --- Read 3D reconstruction project from Metashape ---
+# Read 3D reconstruction project from Metashape
 ms = idp.Metashape(project_path=metashape_path, chunk_id=0)
 
-# --- Backward project polygons onto raw images ---
+# Backward project polygons onto raw images
 img_dict_ms = roi.back2raw(ms)
 
-# --- Sort images by distance to ROI, keep best 10 per canopy ---
+# Sort images by distance to ROI, keep best 10 per canopy
 img_dict_sort = ms.sort_img_by_distance(
     img_dict_ms,
     roi,
@@ -51,7 +51,7 @@ img_dict_sort = ms.sort_img_by_distance(
     num=10  # best 10 images
 )
 
-# --- Save img_dict_sort as JSON ---
+# Save img_dict_sort as JSON
 os.makedirs(output_folder_path, exist_ok=True)
 def convert_polygons_to_lists(d):
     out = {}
@@ -64,7 +64,7 @@ json_path = os.path.join(output_folder_path, "img_dict_sort.json")
 with open(json_path, "w") as f:
     json.dump(img_dict_sort_json, f, indent=2)
 
-# --- Helper functions for image selection ---
+# Helper functions for image selection
 def gimbal_pitch(img_path):
     try:
         img = pyexiv2.Image(img_path)
@@ -145,7 +145,7 @@ def select_best_image(image_paths, polygons):
         best = df_filt.loc[df_filt["sharpness"].idxmax()]
     return best["img_path"], best
 
-# --- Create output directory for best images ---
+# Create output directory for best images
 best_images_dir = os.path.join(output_folder_path, "best_cropped_images")
 os.makedirs(best_images_dir, exist_ok=True)
 
