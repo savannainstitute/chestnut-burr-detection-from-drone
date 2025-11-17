@@ -101,6 +101,28 @@ def reset_region(chunk):
     print("Region reset to prevent point clipping.")
     return True
 
+def optimize_camera_rtk(chunk, cam_optimize, progress=None):
+    """
+    Helper to optimize cameras with configurable adaptive_fitting.
+    """
+    chunk.optimizeCameras(
+        fit_f=cam_optimize['fit_f'],
+        fit_cx=cam_optimize['fit_cx'],
+        fit_cy=cam_optimize['fit_cy'],
+        fit_k1=cam_optimize['fit_k1'],
+        fit_k2=cam_optimize['fit_k2'],
+        fit_k3=cam_optimize['fit_k3'],
+        fit_k4=cam_optimize['fit_k4'],
+        fit_p1=cam_optimize['fit_p1'],
+        fit_p2=cam_optimize['fit_p2'],
+        fit_b1=cam_optimize['fit_b1'],
+        fit_b2=cam_optimize['fit_b2'],
+        fit_corrections=cam_optimize['fit_corrections'],
+        tiepoint_covariance=cam_optimize['tiepoint_covariance'],
+        adaptive_fitting=cam_optimize['adaptive_fitting'],
+        progress=progress
+    )
+
 def filter_tie_points_usgs_part1(chunk, config):
     """
     First stage of USGS point filtering approach - provides better point retention in vegetation
@@ -111,51 +133,23 @@ def filter_tie_points_usgs_part1(chunk, config):
     ru_config = config['tie_point_filtering']['reconstruction_uncertainty']
     pa_config = config['tie_point_filtering']['projection_accuracy']
     re_config = config['tie_point_filtering']['reprojection_error']
-    
-    # Get camera optimization parameters
     cam_optimize = config['camera']['optimize']
-    
-    chunk.optimizeCameras(fit_f=cam_optimize['fit_f'], 
-                      fit_cx=cam_optimize['fit_cx'], 
-                      fit_cy=cam_optimize['fit_cy'],  
-                      fit_k1=cam_optimize['fit_k1'], 
-                      fit_k2=cam_optimize['fit_k2'], 
-                      fit_k3=cam_optimize['fit_k3'], 
-                      fit_k4=cam_optimize['fit_k4'], 
-                      fit_p1=cam_optimize['fit_p1'], 
-                      fit_p2=cam_optimize['fit_p2'],  
-                      fit_b1=cam_optimize['fit_b1'], 
-                      fit_b2=cam_optimize['fit_b2'],
-                      adaptive_fitting=False)
-    
+
     # Filter by reconstruction uncertainty
     fltr = Metashape.TiePoints.Filter()
     fltr.init(chunk, Metashape.TiePoints.Filter.ReconstructionUncertainty)
     values = fltr.values.copy()
     values.sort()
-    # Remove worst X% of points
     threshold_index = int(len(values) * (1 - ru_config['percentile'] / 100))
-    threshold_index = min(threshold_index, len(values) - 1)  # Ensure valid index
+    threshold_index = min(threshold_index, len(values) - 1)
     ru_thresh = values[threshold_index]
-    # Use absolute minimum if calculated threshold is too low
     if ru_thresh < ru_config['min_threshold']:
         ru_thresh = ru_config['min_threshold']
     fltr.removePoints(ru_thresh)
     print(f"Removed points with reconstruction uncertainty > {ru_thresh:.1f}")
 
     # Re-optimize cameras
-    chunk.optimizeCameras(fit_f=cam_optimize['fit_f'], 
-                      fit_cx=cam_optimize['fit_cx'], 
-                      fit_cy=cam_optimize['fit_cy'],  
-                      fit_k1=cam_optimize['fit_k1'], 
-                      fit_k2=cam_optimize['fit_k2'], 
-                      fit_k3=cam_optimize['fit_k3'], 
-                      fit_k4=cam_optimize['fit_k4'], 
-                      fit_p1=cam_optimize['fit_p1'], 
-                      fit_p2=cam_optimize['fit_p2'],  
-                      fit_b1=cam_optimize['fit_b1'], 
-                      fit_b2=cam_optimize['fit_b2'],
-                      adaptive_fitting=False)
+    optimize_camera_rtk(chunk, cam_optimize, progress=progress_timer.update)
 
     # Filter by projection accuracy
     fltr = Metashape.TiePoints.Filter()
@@ -163,26 +157,15 @@ def filter_tie_points_usgs_part1(chunk, config):
     values = fltr.values.copy()
     values.sort()
     threshold_index = int(len(values) * (1 - pa_config['percentile'] / 100))
-    threshold_index = min(threshold_index, len(values) - 1)  # Ensure valid index
+    threshold_index = min(threshold_index, len(values) - 1)
     pa_thresh = values[threshold_index]
     if pa_thresh < pa_config['min_threshold']:
         pa_thresh = pa_config['min_threshold']
     fltr.removePoints(pa_thresh)
     print(f"Removed points with projection accuracy > {pa_thresh:.1f}")
-    
+
     # Re-optimize cameras
-    chunk.optimizeCameras(fit_f=cam_optimize['fit_f'], 
-                      fit_cx=cam_optimize['fit_cx'], 
-                      fit_cy=cam_optimize['fit_cy'],  
-                      fit_k1=cam_optimize['fit_k1'], 
-                      fit_k2=cam_optimize['fit_k2'], 
-                      fit_k3=cam_optimize['fit_k3'], 
-                      fit_k4=cam_optimize['fit_k4'], 
-                      fit_p1=cam_optimize['fit_p1'], 
-                      fit_p2=cam_optimize['fit_p2'],  
-                      fit_b1=cam_optimize['fit_b1'], 
-                      fit_b2=cam_optimize['fit_b2'],
-                      adaptive_fitting=False)
+    optimize_camera_rtk(chunk, cam_optimize, progress=progress_timer.update)
 
     # Initial pass of reprojection error filtering
     fltr = Metashape.TiePoints.Filter()
@@ -190,7 +173,7 @@ def filter_tie_points_usgs_part1(chunk, config):
     values = fltr.values.copy()
     values.sort()
     threshold_index = int(len(values) * (1 - re_config['percentile'] / 100))
-    threshold_index = min(threshold_index, len(values) - 1)  # Ensure valid index
+    threshold_index = min(threshold_index, len(values) - 1)
     re_thresh = values[threshold_index]
     if re_thresh < re_config['min_threshold']:
         re_thresh = re_config['min_threshold']
@@ -198,18 +181,7 @@ def filter_tie_points_usgs_part1(chunk, config):
     print(f"Removed points with reprojection error > {re_thresh:.2f}")
 
     # Final optimization for this stage
-    chunk.optimizeCameras(fit_f=cam_optimize['fit_f'], 
-                      fit_cx=cam_optimize['fit_cx'], 
-                      fit_cy=cam_optimize['fit_cy'],  
-                      fit_k1=cam_optimize['fit_k1'], 
-                      fit_k2=cam_optimize['fit_k2'], 
-                      fit_k3=cam_optimize['fit_k3'], 
-                      fit_k4=cam_optimize['fit_k4'], 
-                      fit_p1=cam_optimize['fit_p1'], 
-                      fit_p2=cam_optimize['fit_p2'],  
-                      fit_b1=cam_optimize['fit_b1'], 
-                      fit_b2=cam_optimize['fit_b2'],
-                      adaptive_fitting=False)
+    optimize_camera_rtk(chunk, cam_optimize, progress=progress_timer.update)
     print("Stage 1 filtering complete")
 
     return ru_thresh, pa_thresh, re_thresh
@@ -219,52 +191,26 @@ def filter_tie_points_usgs_part2(chunk, config):
     Second stage of USGS point filtering - additional pass for reprojection error
     """
     print("Performing USGS-style point filtering (stage 2)...")
-    
     re_config = config['tie_point_filtering']['reprojection_error']
     cam_optimize = config['camera']['optimize']
-    
-    # Re-optimize cameras before second filter pass
-    chunk.optimizeCameras(fit_f=cam_optimize['fit_f'], 
-                      fit_cx=cam_optimize['fit_cx'], 
-                      fit_cy=cam_optimize['fit_cy'],  
-                      fit_k1=cam_optimize['fit_k1'], 
-                      fit_k2=cam_optimize['fit_k2'], 
-                      fit_k3=cam_optimize['fit_k3'], 
-                      fit_k4=cam_optimize['fit_k4'], 
-                      fit_p1=cam_optimize['fit_p1'], 
-                      fit_p2=cam_optimize['fit_p2'],  
-                      fit_b1=cam_optimize['fit_b1'], 
-                      fit_b2=cam_optimize['fit_b2'],
-                      adaptive_fitting=False)
-    
+
     # Second pass of reprojection error filtering
     fltr = Metashape.TiePoints.Filter()
     fltr.init(chunk, Metashape.TiePoints.Filter.ReprojectionError)
     values = fltr.values.copy()
     values.sort()
     threshold_index = int(len(values) * (1 - re_config['percentile'] / 100))
-    threshold_index = min(threshold_index, len(values) - 1)  # Ensure valid index
+    threshold_index = min(threshold_index, len(values) - 1)
     re_thresh = values[threshold_index]
     if re_thresh < re_config['min_threshold']:
         re_thresh = re_config['min_threshold']
     fltr.removePoints(re_thresh)
     print(f"Second pass: Removed points with reprojection error > {re_thresh:.2f}")
-    
+
     # Final optimization
-    chunk.optimizeCameras(fit_f=cam_optimize['fit_f'], 
-                      fit_cx=cam_optimize['fit_cx'], 
-                      fit_cy=cam_optimize['fit_cy'],  
-                      fit_k1=cam_optimize['fit_k1'], 
-                      fit_k2=cam_optimize['fit_k2'], 
-                      fit_k3=cam_optimize['fit_k3'], 
-                      fit_k4=cam_optimize['fit_k4'], 
-                      fit_p1=cam_optimize['fit_p1'], 
-                      fit_p2=cam_optimize['fit_p2'],  
-                      fit_b1=cam_optimize['fit_b1'], 
-                      fit_b2=cam_optimize['fit_b2'],
-                      adaptive_fitting=False)
+    optimize_camera_rtk(chunk, cam_optimize, progress=progress_timer.update)
     print("Stage 2 filtering complete")
-    
+
     return re_thresh
 
 def adaptive_subdivide(chunk, config_section_name, config):
