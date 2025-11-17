@@ -49,6 +49,7 @@ camera:
     fit_b2: true
     fit_corrections: true
     tiepoint_covariance: true
+    adaptive_fitting: false
 
 # Tie point filtering
 tie_point_filtering:
