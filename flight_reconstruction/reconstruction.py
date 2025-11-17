@@ -249,20 +249,9 @@ def main():
                 
                 # Optimize cameras
                 print("Optimizing cameras...")
-                chunk.optimizeCameras(
-                    fit_f=config['camera']['optimize']['fit_f'],
-                    fit_cx=config['camera']['optimize']['fit_cx'],
-                    fit_cy=config['camera']['optimize']['fit_cy'],
-                    fit_k1=config['camera']['optimize']['fit_k1'],
-                    fit_k2=config['camera']['optimize']['fit_k2'],
-                    fit_k3=config['camera']['optimize']['fit_k3'],
-                    fit_k4=config['camera']['optimize']['fit_k4'],
-                    fit_p1=config['camera']['optimize']['fit_p1'],
-                    fit_p2=config['camera']['optimize']['fit_p2'],
-                    fit_b1=config['camera']['optimize']['fit_b1'],
-                    fit_b2=config['camera']['optimize']['fit_b2'],
-                    fit_corrections=config['camera']['optimize']['fit_corrections'],
-                    tiepoint_covariance=config['camera']['optimize']['tiepoint_covariance'],
+                optimize_camera_rtk(
+                    chunk,
+                    config['camera']['optimize'],
                     progress=progress_timer.update
                 )
                 progress_timer.reset()
