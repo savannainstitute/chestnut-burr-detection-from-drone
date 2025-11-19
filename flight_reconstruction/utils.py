@@ -10,6 +10,16 @@ import time
 license_obj = None
 
 def find_files(folder, valid_types):
+    """
+    Find files in a folder with valid extensions.
+
+    Args:
+        folder (str): Folder path.
+        valid_types (list): List of valid file extensions.
+
+    Returns:
+        list: List of file paths.
+    """
     try:
         valid_types = [ext.lower() for ext in valid_types]
         return [os.path.join(folder, entry.name)
@@ -20,49 +30,51 @@ def find_files(folder, valid_types):
         return []
 
 def get_utm_zone_from_gps(photo_paths):
-    """Auto-detect UTM zone from GPS coordinates in first photo"""
-    
-    # Let Metashape read the GPS data from EXIF
+    """
+    Auto-detect UTM zone from GPS coordinates in first photo.
+
+    Args:
+        photo_paths (list): List of photo file paths.
+
+    Returns:
+        str: EPSG code string.
+    """
     temp_doc = Metashape.Document()
     temp_chunk = temp_doc.addChunk()
     temp_chunk.addPhotos([photo_paths[0]])
-    
     lat = temp_chunk.cameras[0].reference.location.y
     lon = temp_chunk.cameras[0].reference.location.x
-    
     utm_zone = int((lon + 180) / 6) + 1
     hemisphere = 'N' if lat >= 0 else 'S'
-    
     if hemisphere == 'N':
         epsg_code = f"EPSG::{32600 + utm_zone}"
     else:
         epsg_code = f"EPSG::{32700 + utm_zone}"
-    
     print(f"Auto-detected UTM zone: {utm_zone}{hemisphere} ({epsg_code})")
     return epsg_code
 
 def setup_rtk_accuracy(chunk, config):
-    """Set RTK accuracy using actual XMP accuracy values when available, disable GPS otherwise"""
+    """
+    Set RTK accuracy using actual XMP accuracy values when available, disable GPS otherwise.
+
+    Args:
+        chunk (Metashape.Chunk): Metashape chunk.
+        config (dict): Configuration dictionary.
+    """
     if not config['gps']['enabled'] or not config['gps']['use_rtk']:
         return
-    
     print("Setting up RTK accuracy...")
     accuracy_from_xmp = 0
     gps_disabled = 0
-    
     for cam in chunk.cameras:
         try:
             meta = pyexiv2.Image(cam.photo.path)
             xmp_data = meta.read_xmp()
             meta.close()
-            
-            # Try to get actual accuracy values first
             rtk_std_lon = xmp_data.get('Xmp.drone-dji.RtkStdLon')
             rtk_std_lat = xmp_data.get('Xmp.drone-dji.RtkStdLat') 
             rtk_std_hgt = xmp_data.get('Xmp.drone-dji.RtkStdHgt')
-            
             if rtk_std_lon and rtk_std_lat and rtk_std_hgt:
-                # Use actual per-image accuracy values
                 cam.reference.location_accuracy = Metashape.Vector([
                     float(rtk_std_lon),
                     float(rtk_std_lat), 
@@ -75,24 +87,25 @@ def setup_rtk_accuracy(chunk, config):
                 ])
                 accuracy_from_xmp += 1
             else:
-                # No RTK data - disable GPS positioning
                 cam.reference.location_enabled = False
                 gps_disabled += 1
-            
         except Exception as e:
             print(f"Warning: RTK setup failed for {cam.label}: {e}")
             cam.reference.location_enabled = False
             gps_disabled += 1
-    
     print(f"RTK setup: {accuracy_from_xmp} cameras with XMP accuracy, {gps_disabled} cameras with GPS disabled")
-    
     chunk.updateTransform()
 
 def reset_region(chunk):
     """
-    Reset the region and make it much larger than the points;
-    necessary because if points go outside the region,
-    they get clipped when saving
+    Reset the region and make it much larger than the points.
+    Necessary because if points go outside the region, they get clipped when saving.
+
+    Args:
+        chunk (Metashape.Chunk): Metashape chunk.
+
+    Returns:
+        bool: True if successful.
     """
     chunk.resetRegion()
     region_dims = chunk.region.size
@@ -103,7 +116,12 @@ def reset_region(chunk):
 
 def optimize_camera_rtk(chunk, cam_optimize, progress=None):
     """
-    Helper to optimize cameras with configurable adaptive_fitting.
+    Optimize cameras with configurable adaptive_fitting.
+
+    Args:
+        chunk (Metashape.Chunk): Metashape chunk.
+        cam_optimize (dict): Camera optimization config.
+        progress (callable, optional): Progress callback.
     """
     chunk.optimizeCameras(
         fit_f=cam_optimize['fit_f'],
@@ -125,11 +143,16 @@ def optimize_camera_rtk(chunk, cam_optimize, progress=None):
 
 def filter_tie_points_usgs_part1(chunk, config):
     """
-    First stage of USGS point filtering approach - provides better point retention in vegetation
+    First stage of USGS point filtering approach - provides better point retention in vegetation.
+
+    Args:
+        chunk (Metashape.Chunk): Metashape chunk.
+        config (dict): Configuration dictionary.
+
+    Returns:
+        tuple: (ru_thresh, pa_thresh, re_thresh)
     """
     print("Performing USGS-style point filtering (stage 1)...")
-    
-    # Get filtering parameters from config
     ru_config = config['tie_point_filtering']['reconstruction_uncertainty']
     pa_config = config['tie_point_filtering']['projection_accuracy']
     re_config = config['tie_point_filtering']['reprojection_error']
@@ -148,7 +171,6 @@ def filter_tie_points_usgs_part1(chunk, config):
     fltr.removePoints(ru_thresh)
     print(f"Removed points with reconstruction uncertainty > {ru_thresh:.1f}")
 
-    # Re-optimize cameras
     optimize_camera_rtk(chunk, cam_optimize, progress=progress_timer.update)
 
     # Filter by projection accuracy
@@ -164,7 +186,6 @@ def filter_tie_points_usgs_part1(chunk, config):
     fltr.removePoints(pa_thresh)
     print(f"Removed points with projection accuracy > {pa_thresh:.1f}")
 
-    # Re-optimize cameras
     optimize_camera_rtk(chunk, cam_optimize, progress=progress_timer.update)
 
     # Initial pass of reprojection error filtering
@@ -180,21 +201,25 @@ def filter_tie_points_usgs_part1(chunk, config):
     fltr.removePoints(re_thresh)
     print(f"Removed points with reprojection error > {re_thresh:.2f}")
 
-    # Final optimization for this stage
     optimize_camera_rtk(chunk, cam_optimize, progress=progress_timer.update)
     print("Stage 1 filtering complete")
-
     return ru_thresh, pa_thresh, re_thresh
 
 def filter_tie_points_usgs_part2(chunk, config):
     """
-    Second stage of USGS point filtering - additional pass for reprojection error
+    Second stage of USGS point filtering - additional pass for reprojection error.
+
+    Args:
+        chunk (Metashape.Chunk): Metashape chunk.
+        config (dict): Configuration dictionary.
+
+    Returns:
+        float: re_thresh
     """
     print("Performing USGS-style point filtering (stage 2)...")
     re_config = config['tie_point_filtering']['reprojection_error']
     cam_optimize = config['camera']['optimize']
 
-    # Second pass of reprojection error filtering
     fltr = Metashape.TiePoints.Filter()
     fltr.init(chunk, Metashape.TiePoints.Filter.ReprojectionError)
     values = fltr.values.copy()
@@ -207,34 +232,35 @@ def filter_tie_points_usgs_part2(chunk, config):
     fltr.removePoints(re_thresh)
     print(f"Second pass: Removed points with reprojection error > {re_thresh:.2f}")
 
-    # Final optimization
     optimize_camera_rtk(chunk, cam_optimize, progress=progress_timer.update)
     print("Stage 2 filtering complete")
-
     return re_thresh
 
 def adaptive_subdivide(chunk, config_section_name, config):
     """
     Enable subdivide_task if estimated peak memory > 90% of available physical RAM.
+
+    Args:
+        chunk (Metashape.Chunk): Metashape chunk.
+        config_section_name (str): Section name in config.
+        config (dict): Configuration dictionary.
+
+    Returns:
+        dict: Updated config.
     """
     mem = psutil.virtual_memory()
     total_gb = mem.total / (1024 ** 3)
-
     enabled = [c for c in chunk.cameras if c.enabled]
     if not enabled:
         print(f"[WARN] No enabled cameras for {config_section_name}.")
         return config
-
     sensor = enabled[0].sensor
     width, height = sensor.width, sensor.height
     mp_per_image = (width * height) / 1e6
     n_images = len(enabled)
     downscale = config[config_section_name].get('downscale', 1)
     neighbors = config[config_section_name].get('max_neighbors', 16)
-
-    # Upper-bound estimate (GB)
     est_needed = 0.8 * n_images * (mp_per_image / downscale**2) * (neighbors / 8) / 1000.0
-
     threshold = total_gb * 0.9  # 90% of available RAM
     if est_needed > threshold:
         print(f"Estimated {est_needed:.0f} GB > {threshold:.0f} GB (90% of RAM). "
@@ -243,20 +269,22 @@ def adaptive_subdivide(chunk, config_section_name, config):
     else:
         config[config_section_name]['subdivide_task'] = False
         print(f"Estimated {est_needed:.0f} GB within ({total_gb:.0f} GB available).")
-
     print(f"{config_section_name}: n_images={n_images}, mp_per_image={mp_per_image:.1f}, "
           f"downscale={downscale}, neighbors={neighbors}, subdivide_task={config[config_section_name]['subdivide_task']}")
-
     return config
 
 def activate_license():
-    """Activate license using environment variable"""
+    """
+    Activate license using environment variable.
+
+    Returns:
+        Metashape.License or None
+    """
     global license_obj
     license_key = os.environ.get('METASHAPE_LICENSE_KEY')
     if not license_key:
         print("Error: METASHAPE_LICENSE_KEY environment variable not set")
         return None
-        
     print("Activating license...")
     license_obj = Metashape.License()
     license_obj.activate(license_key)
@@ -264,7 +292,9 @@ def activate_license():
     return license_obj
 
 def deactivate_license():
-    """Deactivate license - called by signal handlers and normal exit"""
+    """
+    Deactivate license - called by signal handlers and normal exit.
+    """
     global license_obj
     if license_obj:
         print("Deactivating license...")
@@ -273,29 +303,37 @@ def deactivate_license():
         license_obj = None
 
 def signal_handler(signum, frame):
-    """Handle container shutdown signals"""
+    """
+    Handle container shutdown signals.
+    """
     print(f"Received signal {signum}, deactivating license...")
     deactivate_license()
     sys.exit(0)
 
 def setup_license_cleanup():
-    """Setup signal handlers and exit cleanup for license"""
+    """
+    Setup signal handlers and exit cleanup for license.
+    """
     signal.signal(signal.SIGTERM, signal_handler)  # Docker stop
     signal.signal(signal.SIGINT, signal_handler)   # Ctrl+C
-    
-    # Only register SIGHUP on Unix-like systems
     if hasattr(signal, 'SIGHUP'):
         signal.signal(signal.SIGHUP, signal_handler)
-    
     atexit.register(deactivate_license)
 
 def has_valid_transform(chunk):
-    """Check if chunk has a valid coordinate transform"""
+    """
+    Check if chunk has a valid coordinate transform.
+
+    Args:
+        chunk (Metashape.Chunk): Metashape chunk.
+
+    Returns:
+        bool: True if valid, False otherwise.
+    """
     try:
         transform = chunk.transform
         if not (transform.scale and transform.rotation and transform.translation):
             return False
-        # Check if scale is meaningful (not zero or None)
         if not transform.scale or transform.scale == 0:
             return False
         return True
@@ -303,13 +341,14 @@ def has_valid_transform(chunk):
         return False
 
 class ProgressTimer:
+    """
+    Utility class for progress reporting with estimated time left.
+    """
     def __init__(self):
         self.reset()
-    
     def reset(self):
         self.start_time = time.time()
         self.last_printed_percentage = -5
-    
     def update(self, p):
         if p - self.last_printed_percentage >= 5 or p >= 100:
             elapsed = float(time.time() - self.start_time)
