@@ -260,9 +260,7 @@ def run_reconstruction():
                 match_params = config['photo_matching']
                 
                 chunk.matchPhotos(downscale=match_params['downscale'],
-                                downscale_3d=match_params['downscale_3d'],
                                 keypoint_limit=match_params['keypoint_limit'], 
-                                keypoint_limit_3d=match_params['keypoint_limit_3d'], 
                                 keypoint_limit_per_mpx=match_params['keypoint_limit_per_mpx'],
                                 tiepoint_limit=match_params['tiepoint_limit'],
                                 generic_preselection=match_params['generic_preselection'], 
@@ -580,6 +578,12 @@ def run_reconstruction():
         else:
             print("CHM already built, skipping...")
                 
+        # Set DSM as active elevation surface before building orthomosaic
+        for elevation in chunk.elevations:
+            if getattr(elevation, "label", "") == "DSM":
+                chunk.elevation = elevation
+                break
+            
         # Orthomosaic
         if not status['orthomosaic_built']:
             try:
