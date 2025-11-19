@@ -13,3 +13,4 @@ dependencies:
   - pip:
     - easyidp
     - pyexiv2
+    - pyyaml
