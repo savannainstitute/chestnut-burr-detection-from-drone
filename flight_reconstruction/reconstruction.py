@@ -9,7 +9,18 @@ import argparse
 from flight_reconstruction.utils import *
 
 def load_config(config_path):
-    """Load configuration from YAML file"""
+    """
+    Load configuration from a YAML file.
+
+    Args:
+        config_path (str): Path to configuration YAML file.
+
+    Returns:
+        dict: Configuration dictionary.
+
+    Raises:
+        SystemExit: If loading fails.
+    """
     try:
         with open(config_path, 'r') as file:
             config = yaml.safe_load(file)
@@ -20,17 +31,27 @@ def load_config(config_path):
         sys.exit(1)
 
 def parse_arguments():
-    """Parse command line arguments"""
+    """
+    Parse command line arguments.
+
+    Returns:
+        argparse.Namespace: Parsed arguments.
+    """
     parser = argparse.ArgumentParser(description='Metashape automated reconstruction')
     parser.add_argument('--config', type=str, default='config.yml', 
                         help='Path to configuration file')
-    parser.add_argument('--folders', type=str,
-                        help='List of folders to process, in format: ["folder1", "folder2"]')
+    parser.add_argument('--folder', type=str,
+                        help='Folder to process')
     args = parser.parse_args()
     return args
 
 def configure_processors():
-    """Configure Metashape to use only high VRAM GPUs (>= 8 GB VRAM) and disable CPU for GPU steps."""
+    """
+    Configure Metashape to use only high VRAM GPUs (>= 8 GB VRAM) and disable CPU for GPU steps.
+
+    Returns:
+        None
+    """
     devices = Metashape.app.enumGPUDevices()
     if len(devices) > 0:
         gpu_names = [device.get('name', f'GPU {i}') for i, device in enumerate(devices)]
@@ -71,7 +92,15 @@ def configure_processors():
         print("No GPUs detected, using CPU processing")
 
 def check_processing_status(chunk):
-    """Check what processing steps have already been completed"""
+    """
+    Check what processing steps have already been completed.
+
+    Args:
+        chunk (Metashape.Chunk): The Metashape chunk object.
+
+    Returns:
+        dict: Status of each processing step.
+    """
     status = {
         'photos_loaded': len(chunk.cameras) > 0,
         'tie_points_exist': len(chunk.tie_points.points) > 0 if chunk.tie_points else False,
@@ -83,10 +112,22 @@ def check_processing_status(chunk):
     }
     return status
 
-def main():
+def run_reconstruction():
     """
     Main function to process a single mounted folder.
-    This script is designed to process one drone flight folder at a time.
+
+    Steps:
+        1. Activate license and parse arguments/config.
+        2. Find and load images, set up project and chunk.
+        3. Configure GPU/CPU processing.
+        4. Set coordinate system from image GPS.
+        5. Load photos, analyze quality, and filter.
+        6. Match photos, align cameras, optimize, and filter tie points.
+        7. Build depth maps, dense cloud, mesh, DEMs, and orthomosaic.
+        8. Export all outputs and report.
+
+    Returns:
+        None. Exits on error.
     """
     setup_license_cleanup()
     
@@ -98,12 +139,10 @@ def main():
     args = parse_arguments()
     config = load_config(args.config)
 
-    folder_name = os.environ.get('FOLDER_NAME')
-    if not folder_name:
-        print("Error: FOLDER_NAME environment variable not set")
+    input_folder = args.folder
+    if not input_folder:
+        print("Error: --folder argument not provided")
         sys.exit(1)
-
-    input_folder = folder_name
     output_folder = os.path.join(input_folder, "outputs")
     os.makedirs(output_folder, exist_ok=True)
     
@@ -284,7 +323,7 @@ def main():
         else:
             print("Tie points already exist, skipping matching/alignment/filtering...")
         
-       # Depth maps
+        # Depth maps
         if not status['depth_maps_built']:
             try:
                 print("Building depth maps...")
@@ -309,7 +348,7 @@ def main():
                     reuse_depth=config['depth_maps']['reuse_depth'],  
                     max_neighbors=config['depth_maps']['max_neighbors'], 
                     subdivide_task=config['depth_maps']['subdivide_task'],
-                    max_gpu_multiplier=config['depth_maps']['max_gpu_multiplier'], # hidden setting that allows concurrency on single GPU
+                    max_gpu_multiplier=config['depth_maps']['max_gpu_multiplier'],
                     progress=progress_timer.update
                 )
                 progress_timer.reset()
@@ -334,9 +373,8 @@ def main():
                 if source_data_str == "depth_maps":
                     source_data = Metashape.DataSource.DepthMapsData
                 else:
-                    source_data = Metashape.DataSource.PointCloudData # tie points (sparse cloud)
+                    source_data = Metashape.DataSource.PointCloudData
 
-                # Build point cloud
                 print("Building dense cloud...")
                 chunk.buildPointCloud(
                     source_data=source_data, 
@@ -351,7 +389,6 @@ def main():
                 doc.save()
                 print("Point cloud finished building.")
                 
-                # Classify ground points
                 print("Classifying ground points...")
                 ground_config = config['classify_ground_points']
                 chunk.point_cloud.classifyGroundPoints(
@@ -364,10 +401,7 @@ def main():
                 doc.save()
                 print("Ground points classified.")
 
-                # Export point cloud
                 pc_file = os.path.join(output_folder, f"{lowest_folder_name}_point_cloud.{config['point_cloud']['export']['format']}")
-                
-                # Convert format from string to Metashape enum
                 format_str = config['point_cloud']['export']['format'].lower()
                 if format_str == "las":
                     export_format = Metashape.PointCloudFormat.PointCloudFormatLAS
@@ -429,16 +463,12 @@ def main():
         # DEMs
         if not status['elevations_built']:
             try:
-                # Build DEMs if enabled
                 print("Building DEMs...")
-                
-                # DEM compression settings
                 compression = Metashape.ImageCompression()
                 compression.tiff_big = config['dem']['tiff_big']
                 compression.tiff_tiled = config['dem']['tiff_tiled']
                 compression.tiff_overviews = config['dem']['tiff_overviews']
                 
-                # Build DSM from model
                 print("Building DSM from model...")
                 chunk.buildDem(
                     source_data=Metashape.DataSource.ModelData,
@@ -452,7 +482,6 @@ def main():
                 chunk.elevation.label = "DSM"
                 doc.save()
                 
-                # Export DSM
                 dsm_file = os.path.join(output_folder, f"{lowest_folder_name}_dsm.tif")
                 chunk.exportRaster(
                     path=dsm_file,
@@ -465,7 +494,6 @@ def main():
                 progress_timer.reset()
                 print("DSM exported.")
                 
-                # Build DTM from ground points only
                 print("Building DTM from ground points in point cloud...")
                 chunk.buildDem(
                     source_data=Metashape.DataSource.PointCloudData,
@@ -479,7 +507,6 @@ def main():
                 chunk.elevation.label = "DTM"
                 doc.save()
                 
-                # Export DTM
                 dtm_file = os.path.join(output_folder, f"{lowest_folder_name}_dtm.tif")
                 chunk.exportRaster(
                     path=dtm_file,
@@ -492,7 +519,6 @@ def main():
                 progress_timer.reset()
                 print("DTM exported.")
                 
-                # Create and export CHM
                 print("Creating Canopy Height Model (CHM)...")
                 dsm_asset = None
                 dtm_asset = None
@@ -504,7 +530,6 @@ def main():
 
                 if dsm_asset is not None and dtm_asset is not None:
                     chm_file = os.path.join(output_folder, f"{lowest_folder_name}_chm.tif")
-                    # CHM = DSM - DTM
                     chunk.transformRaster(
                         asset=dsm_asset,
                         operand_asset=dtm_asset,
@@ -517,7 +542,6 @@ def main():
                     )
                     chunk.elevation.label = "CHM"
                     doc.save()
-                    # Export CHM
                     chunk.exportRaster(
                         path=chm_file,
                         projection=projection,
@@ -530,7 +554,6 @@ def main():
                 else:
                     print("DSM or DTM asset not found, CHM not created.")
 
-                # Set DSM as active elevation surface for orthomosaic
                 for elevation in chunk.elevations:
                     if elevation.label == "DSM":
                         chunk.elevation = elevation
@@ -545,14 +568,11 @@ def main():
         if not status['orthomosaic_built']:
             try:
                 print("Building orthomosaic from DSM...")
-                
-                # Set up ortho compression
                 compression = Metashape.ImageCompression()
                 compression.tiff_big = config['orthomosaic']['export']['tiff_big']
                 compression.tiff_tiled = config['orthomosaic']['export']['tiff_tiled'] 
                 compression.tiff_overviews = config['orthomosaic']['export']['tiff_overviews']
                 
-                # Convert blending mode
                 blend_str = config['orthomosaic']['blending_mode'].lower()
                 if blend_str == "mosaic":
                     blend_mode = Metashape.BlendingMode.MosaicBlending
@@ -565,7 +585,6 @@ def main():
                 else:
                     blend_mode = Metashape.BlendingMode.DisabledBlending
                 
-                # Build orthomosaic from DSM
                 chunk.buildOrthomosaic(
                     surface_data=Metashape.DataSource.ElevationData, 
                     blending_mode=blend_mode, 
@@ -581,7 +600,6 @@ def main():
                 doc.save()
                 print("Orthomosaic finished building.")
                 
-                # Export orthomosaic 
                 ortho_file = os.path.join(output_folder, f"{lowest_folder_name}_orthomosaic.tif")
                 chunk.exportRaster(
                     ortho_file, 
@@ -603,7 +621,6 @@ def main():
             print("Orthomosaic already built, skipping...")
         
         try:
-            # Export report
             report_file = os.path.join(output_folder, f"{lowest_folder_name}_report.pdf")
             chunk.exportReport(report_file)
             print("Report exported.")
@@ -634,8 +651,19 @@ def main():
     deactivate_license()
 
 if __name__ == '__main__':
+    """
+    Entry point for Metashape batch reconstruction.
+
+    Steps:
+        1. Run garbage collection.
+        2. Run main reconstruction pipeline.
+        3. Print errors if encountered.
+
+    Returns:
+        None
+    """
     try:
         gc.collect()
-        main()
+        run_reconstruction()
     except Exception as e:
         print(f"Error in main processing: {e}")
