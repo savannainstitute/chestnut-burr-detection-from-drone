@@ -1,3 +1,4 @@
 /canopy_segmentation/sample_data
 /flight_reconstruction/sample_data
 /image_selection/easyidp_outputs
+*.pyc
