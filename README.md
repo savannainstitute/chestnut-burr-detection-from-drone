@@ -88,8 +88,8 @@ Generate georeferenced (UTM projections) orthomosaics, elevation surfaces, and p
 3. Run the reconstruction script:
     ```
     python flight_reconstruction/reconstruction.py `
-        --config flight_reconstruction/config.yml `
-        --folder "sample_data/20230823_Orchard4"
+        --config "flight_reconstruction/config.yml" `
+        --folder "flight_reconstruction/sample_data/20230823_Orchard4"
     ```
 
 **Arguments:**
@@ -103,7 +103,7 @@ Generate georeferenced (UTM projections) orthomosaics, elevation surfaces, and p
 
 Segment individual tree canopies from the CHM using a proximity-based watershed algorithm with control markers.
 
-*Note: In future releases, this step will be replaced with the SEConD model, which will allow canopy segmentation without the need for manually created control markers. As for now, tree markers can be manually digitized using leaf-off imagery or collected via RTK GPS.*
+*Note: In future releases, this step will be replaced with the SEConD model, which will allow canopy segmentation without the need for manually created control markers. For now, tree markers can be manually digitized using leaf-off imagery or collected via RTK GPS.*
 
 - **Script:** `canopy_segmentation/segmentation.py`
 - **Sample Data:**  
