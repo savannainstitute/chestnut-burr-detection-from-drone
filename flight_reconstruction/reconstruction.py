@@ -112,8 +112,7 @@ def check_processing_status(chunk):
         'orthomosaic_built': bool(chunk.orthomosaic)
     }
     if chunk.point_cloud and hasattr(chunk.point_cloud, "point_classes"):
-        ground_count = chunk.point_cloud.point_classes.get(Metashape.PointClass.Ground, 0)
-        status['ground_points_classified'] = ground_count > 0
+        status['ground_points_classified'] = Metashape.PointClass.Ground in chunk.point_cloud.point_classes
     return status
 
 def run_reconstruction():
