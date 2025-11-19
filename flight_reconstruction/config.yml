@@ -13,9 +13,7 @@ image_quality:
 # Photo matching parameters
 photo_matching:
   downscale: 1
-  downscale_3d: 2
   keypoint_limit: 60000
-  keypoint_limit_3d: 150000
   keypoint_limit_per_mpx: 1500
   tiepoint_limit: 0
   generic_preselection: false
@@ -104,7 +102,7 @@ model:
   vertex_confidence: true
   keep_depth: true
 
-# DEM parameters (DTM, DSM, CHM)
+# Elevation surface parameters (DTM, DSM, CHM)
 dem:
   resolution: 0  # 0 = auto
   tiff_big: true
