@@ -106,10 +106,14 @@ def check_processing_status(chunk):
         'tie_points_exist': len(chunk.tie_points.points) > 0 if chunk.tie_points else False,
         'depth_maps_built': bool(chunk.depth_maps),
         'point_cloud_built': bool(chunk.point_cloud),
+        'ground_points_classified': False,
         'model_built': bool(chunk.model),
         'elevations_built': len(chunk.elevations) > 0,
         'orthomosaic_built': bool(chunk.orthomosaic)
     }
+    if chunk.point_cloud and hasattr(chunk.point_cloud, "point_classes"):
+        ground_count = chunk.point_cloud.point_classes.get(Metashape.PointClass.Ground, 0)
+        status['ground_points_classified'] = ground_count > 0
     return status
 
 def run_reconstruction():
@@ -368,13 +372,11 @@ def run_reconstruction():
         # Point cloud
         if not status['point_cloud_built']:
             try:
-                # Convert source_data from string to Metashape enum
                 source_data_str = config['point_cloud']['source_data'].lower()
                 if source_data_str == "depth_maps":
                     source_data = Metashape.DataSource.DepthMapsData
                 else:
                     source_data = Metashape.DataSource.PointCloudData
-
                 print("Building dense cloud...")
                 chunk.buildPointCloud(
                     source_data=source_data, 
@@ -388,7 +390,14 @@ def run_reconstruction():
                 progress_timer.reset()
                 doc.save()
                 print("Point cloud finished building.")
-                
+            except Exception as e:
+                print(f"Error building point cloud: {e}")
+                sys.exit(1)
+        else:
+            print("Point cloud already built, skipping...")
+
+        if not status['ground_points_classified']:
+            try:
                 print("Classifying ground points...")
                 ground_config = config['classify_ground_points']
                 chunk.point_cloud.classifyGroundPoints(
@@ -400,7 +409,6 @@ def run_reconstruction():
                 progress_timer.reset()
                 doc.save()
                 print("Ground points classified.")
-
                 pc_file = os.path.join(output_folder, f"{lowest_folder_name}_point_cloud.{config['point_cloud']['export']['format']}")
                 format_str = config['point_cloud']['export']['format'].lower()
                 if format_str == "las":
@@ -413,7 +421,6 @@ def run_reconstruction():
                     export_format = Metashape.PointCloudFormat.PointCloudFormatPLY
                 else:
                     export_format = Metashape.PointCloudFormat.PointCloudFormatXYZ
-                
                 chunk.exportPointCloud(
                     pc_file, 
                     source_data=Metashape.DataSource.PointCloudData, 
@@ -427,10 +434,10 @@ def run_reconstruction():
                 progress_timer.reset()
                 print("Point cloud exported.")
             except Exception as e:
-                print(f"Error building point cloud: {e}")
+                print(f"Error classifying ground points: {e}")
                 sys.exit(1)
         else:
-            print("Point cloud already built, skipping...")
+            print("Ground points already classified, skipping...")
 
         # Mesh (3d model)
         if not status['model_built']:
@@ -460,10 +467,10 @@ def run_reconstruction():
         projection = Metashape.OrthoProjection()
         projection.crs = Metashape.CoordinateSystem(epsg_code)
 
-        # DEMs
+        # Elevation surfaces
         if not status['elevations_built']:
             try:
-                print("Building DEMs...")
+                print("Building elevation surfaces...")
                 compression = Metashape.ImageCompression()
                 compression.tiff_big = config['dem']['tiff_big']
                 compression.tiff_tiled = config['dem']['tiff_tiled']
