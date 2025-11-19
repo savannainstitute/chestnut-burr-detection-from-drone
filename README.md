@@ -83,7 +83,7 @@ Generate georeferenced orthomosaics, elevation surfaces, and point clouds from d
     ```
 2. Set your Metashape license key as an environment variable (replace with your actual key):
     ```
-    set METASHAPE_LICENSE_KEY=XXXXX-XXXXX-XXXXX-XXXXX-XXXXX
+    $env:METASHAPE_LICENSE_KEY="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
     ```
 3. Run the reconstruction script:
     ```
