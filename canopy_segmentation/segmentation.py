@@ -15,11 +15,25 @@ from shapely.geometry import shape, Point
 
 class TreeCanopySegmentation:
     """
-    Performs proximity-based segmentation of tree canopies from a CHM raster.
+    Proximity-based segmentation of tree canopies from a CHM raster.
+
+    Steps:
+        1. Load CHM raster (optionally crop to extent)
+        2. Refine tree top points to local maxima within a buffer
+        3. Adaptive watershed segmentation using tree tops
+        4. Save results as shapefiles (canopy polygons and refined tree tops)
     """
-    def __init__(self, chm_path):
+
+    def __init__(self, chm_path, min_height):
         """
         Initialize segmentation parameters and state.
+
+        Args:
+            chm_path (str): Path to input CHM raster file.
+            min_height (float): Minimum CHM height (meters) for segmentation mask.
+
+        Returns:
+            None
         """
         self.penalty_strength = 0.1                # Controls strength of proximity penalty in segmentation
         self.boundary_penalty_weight = 1.0         # Weight for proximity penalty in the watershed surface
@@ -27,7 +41,7 @@ class TreeCanopySegmentation:
         self.watershed_compactness = 0.0001        # Compactness parameter for watershed algorithm
         self.base_height_factor = 0.8              # Base factor for adjusting boundary distance by height
         self.height_factor_scale = 0.2             # Scale for height-based adjustment of boundary distance
-        self.min_height = 1.9                      # Minimum CHM height (meters) for segmentation mask
+        self.min_height = min_height               # Minimum CHM height (meters) for segmentation mask
         self.surface_smooth_sigma = 0.5            # Gaussian smoothing sigma for CHM surface
 
         self.chm_path = chm_path                   # Path to input CHM raster file
@@ -39,27 +53,38 @@ class TreeCanopySegmentation:
         self.resolution_m_per_pixel = None         # Raster resolution (meters per pixel)
         self.extent_gdf = None                     # GeoDataFrame for processing extent polygon
 
-    def load_chm(self, extent_shapefile):
+    def load_chm(self, extent_shapefile=None):
         """
-        Loads and crops the CHM raster to the given extent shapefile.
+        Load CHM raster, optionally cropping to a shapefile extent.
+
+        Args:
+            extent_shapefile (str, optional): Path to extent shapefile.
+
+        Returns:
+            bool: True if loaded successfully, False otherwise.
         """
         try:
             with rasterio.open(self.chm_path) as src:
-                gdf = gpd.read_file(extent_shapefile)
-                if gdf.crs != src.crs:
-                    gdf = gdf.to_crs(src.crs)
-                self.extent_gdf = gdf
-                geoms = [geom for geom in gdf.geometry]
-                arr, out_transform = rio_mask.mask(src, geoms, crop=True, nodata=np.nan)
-                profile = src.profile.copy()
-                profile.update({
-                    "height": arr.shape[1],
-                    "width": arr.shape[2],
-                    "transform": out_transform,
-                    "nodata": np.nan
-                })
-                data = arr[0].astype(np.float64)
-                self.chm_profile = profile
+                if extent_shapefile is not None:
+                    gdf = gpd.read_file(extent_shapefile)
+                    if gdf.crs != src.crs:
+                        gdf = gdf.to_crs(src.crs)
+                    self.extent_gdf = gdf
+                    geoms = [geom for geom in gdf.geometry]
+                    arr, out_transform = rio_mask.mask(src, geoms, crop=True, nodata=np.nan)
+                    profile = src.profile.copy()
+                    profile.update({
+                        "height": arr.shape[1],
+                        "width": arr.shape[2],
+                        "transform": out_transform,
+                        "nodata": np.nan
+                    })
+                    data = arr[0].astype(np.float64)
+                    self.chm_profile = profile
+                else:
+                    data = src.read(1).astype(np.float64)
+                    self.chm_profile = src.profile.copy()
+                    self.extent_gdf = None
 
                 nodata = self.chm_profile.get("nodata", None)
                 if nodata is not None:
@@ -82,13 +107,26 @@ class TreeCanopySegmentation:
 
     def meters_to_pixels(self, distance_meters):
         """
-        Converts a distance in meters to pixels using the raster resolution.
+        Convert a distance in meters to pixels using raster resolution.
+
+        Args:
+            distance_meters (float): Distance in meters.
+
+        Returns:
+            int: Distance in pixels (rounded).
         """
         return int(round(distance_meters / self.resolution_m_per_pixel))
 
-    def load_tree_tops_from_shapefile(self, shapefile_path, buffer_meters=0.25):
+    def load_tree_markers_from_shapefile(self, shapefile_path, buffer_meters):
         """
-        Loads tree top points, refines them to local maxima in the CHM, and creates marker image.
+        Refine tree top points to local maxima in the CHM and create marker image.
+
+        Args:
+            shapefile_path (str): Path to input marker shapefile.
+            buffer_meters (float): Buffer radius in meters for local maxima search.
+
+        Returns:
+            tuple or None: (rows, cols) of refined points, or None if failed.
         """
         try:
             gdf = gpd.read_file(shapefile_path)
@@ -109,7 +147,6 @@ class TreeCanopySegmentation:
                     skipped += 1
                     continue
 
-                # Use a square window of size (2*base_buf_px + 1) centered on (r, c)
                 rmin = max(0, r - base_buf_px)
                 rmax = min(self.original_chm.shape[0], r + base_buf_px + 1)
                 cmin = max(0, c - base_buf_px)
@@ -127,7 +164,6 @@ class TreeCanopySegmentation:
                 max_r = rmin + max_local_idx[0]
                 max_c = cmin + max_local_idx[1]
 
-                # No distance check; always use the local maximum in the window
                 refined.append((max_r, max_c))
 
             if len(refined) == 0:
@@ -142,7 +178,6 @@ class TreeCanopySegmentation:
             rows = np.array([p[0] for p in refined], dtype=int)
             cols = np.array([p[1] for p in refined], dtype=int)
             print(f"Loaded {len(refined)} tree tops (skipped {skipped})")
-
             print(f"Minimum height threshold: {self.min_height:.3f} m")
             return (rows, cols)
 
@@ -152,7 +187,10 @@ class TreeCanopySegmentation:
 
     def watershed_segment(self):
         """
-        Performs adaptive watershed segmentation using the tree markers and CHM.
+        Perform adaptive marker-controlled watershed segmentation on the CHM.
+
+        Returns:
+            bool: True if segmentation succeeded, False otherwise.
         """
         if self.tree_markers is None:
             print("No markers available for watershed.")
@@ -288,7 +326,10 @@ class TreeCanopySegmentation:
 
     def _remove_boundary_segments(self):
         """
-        Removes segments that overlap the raster boundary by more than a threshold.
+        Remove segments that overlap the raster boundary by more than a threshold.
+
+        Returns:
+            None
         """
         max_border_overlap_m = 0.5
         max_border_pixels = int(max_border_overlap_m / self.resolution_m_per_pixel)
@@ -324,7 +365,13 @@ class TreeCanopySegmentation:
     @staticmethod
     def _remove_shapefile_if_exists(path_shp):
         """
-        Removes all files associated with a shapefile if they exist before overwriting.
+        Remove all files associated with a shapefile if they exist.
+
+        Args:
+            path_shp (str): Path to the .shp file.
+
+        Returns:
+            None
         """
         base, _ = os.path.splitext(path_shp)
         exts = [".shp", ".shx", ".dbf", ".prj", ".cpg", ".qix", ".sbn", ".sbx"]
@@ -338,7 +385,14 @@ class TreeCanopySegmentation:
 
     def save_refined_tree_tops(self, output_dir, prefix):
         """
-        Saves the refined tree top points as a shapefile.
+        Save the refined tree top points as a shapefile.
+
+        Args:
+            output_dir (str): Output directory.
+            prefix (str): Output filename prefix.
+
+        Returns:
+            None
         """
         if self.tree_markers is None:
             return
@@ -364,7 +418,14 @@ class TreeCanopySegmentation:
 
     def save_results(self, output_dir, prefix):
         """
-        Saves the segmented canopy polygons as a shapefile with shape statistics.
+        Save the segmented canopy polygons as a shapefile with shape statistics.
+
+        Args:
+            output_dir (str): Output directory.
+            prefix (str): Output filename prefix.
+
+        Returns:
+            None
         """
         if self.segments is None:
             print("No segments to save.")
@@ -404,7 +465,13 @@ class TreeCanopySegmentation:
 
 def prefix_from_chm(chm_path):
     """
-    Returns a file prefix based on the CHM filename.
+    Get a filename prefix from a CHM raster path.
+
+    Args:
+        chm_path (str): Path to the CHM raster.
+
+    Returns:
+        str: Prefix for output files.
     """
     name = os.path.basename(chm_path)
     if name.lower().endswith("_chm.tif"):
@@ -414,34 +481,57 @@ def prefix_from_chm(chm_path):
     else:
         return os.path.splitext(name)[0]
 
-def main():
+def run_segmentation():
+    """
+    Command-line entry point for proximity-based canopy segmentation.
+
+    Steps:
+        1. Load CHM raster (optionally crop to extent)
+        2. Refine tree top points to local maxima within a buffer
+        3. Adaptive watershed segmentation using tree tops
+        4. Save results as shapefiles (canopy polygons and refined tree tops)
+
+    Command-line Args:
+        --chm (str): Path to CHM TIFF
+        --tree-markers (str): Point shapefile of tree markers
+        --min-height (float): Minimum CHM height for segmentation mask (default: 1.75)
+        --buffer-size (float): Buffer size in meters for tree marker refinement (default: 1.0)
+        --extent (str, optional): Polygon shapefile defining processing extent
+        --outdir (str): Output directory
+
+    Returns:
+        int: 0 if successful, 1 if error
+    """
     parser = argparse.ArgumentParser(description="Proximity-based canopy segmentation")
-    parser.add_argument("chm_path", help="Path to CHM TIFF")
+    parser.add_argument("--chm", required=True, help="Path to CHM TIFF")
     parser.add_argument("--tree-markers", "-t", required=True, help="Point shapefile of tree markers")
-    parser.add_argument("--extent", "-e", required=True, help="Polygon shapefile defining processing extent")
+    parser.add_argument("--min-height", type=float, default=1.75, help="Minimum CHM height (meters) for segmentation mask (default: 1.75)")
+    parser.add_argument("--buffer-size", type=float, default=1.0, help="Buffer size in meters for tree marker refinement (default: 1.0)")
+    parser.add_argument("--extent", "-e", required=False, help="Polygon shapefile defining processing extent (optional)")
+    parser.add_argument("--outdir", required=True, help="Output directory")
     args = parser.parse_args()
 
-    if not os.path.exists(args.chm_path):
+    if not os.path.exists(args.chm):
         print("CHM not found.")
         return 1
-    if not os.path.exists(args.tree_tops):
-        print("Tree tops shapefile not found.")
+    if not os.path.exists(args.tree_markers):
+        print("Tree markers shapefile not found.")
         return 1
-    if not os.path.exists(args.extent):
+    if args.extent is not None and not os.path.exists(args.extent):
         print("Extent shapefile not found.")
         return 1
 
-    prefix = prefix_from_chm(args.chm_path)
-    outdir = prefix
+    prefix = prefix_from_chm(args.chm)
+    outdir = args.outdir
 
-    seg = TreeCanopySegmentation(args.chm_path)
+    seg = TreeCanopySegmentation(args.chm, min_height=args.min_height)
 
     if not seg.load_chm(extent_shapefile=args.extent):
         return 1
 
-    coords = seg.load_tree_tops_from_shapefile(
-        args.tree_tops,
-        buffer_meters=0.25
+    coords = seg.load_tree_markers_from_shapefile(
+        args.tree_markers,
+        buffer_meters=args.buffer_size
     )
 
     if coords is None:
@@ -457,4 +547,4 @@ def main():
 
 if __name__ == "__main__":
     import sys
-    sys.exit(main())
+    sys.exit(run_segmentation())
