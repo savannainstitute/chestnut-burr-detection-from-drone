@@ -106,13 +106,11 @@ def check_processing_status(chunk):
         'tie_points_exist': len(chunk.tie_points.points) > 0 if chunk.tie_points else False,
         'depth_maps_built': bool(chunk.depth_maps),
         'point_cloud_built': bool(chunk.point_cloud),
-        'ground_points_classified': False,
+        'ground_points_classified': chunk.point_cloud.point_count_by_class.get(2, 0) > 0 if chunk.point_cloud else False,
         'model_built': bool(chunk.model),
         'elevations_built': len(chunk.elevations) > 0,
         'orthomosaic_built': bool(chunk.orthomosaic)
     }
-    if chunk.point_cloud and hasattr(chunk.point_cloud, "point_classes"):
-        status['ground_points_classified'] = Metashape.PointClass.Ground in chunk.point_cloud.point_classes
     return status
 
 def run_reconstruction():
