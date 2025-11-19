@@ -108,7 +108,9 @@ def check_processing_status(chunk):
         'point_cloud_built': bool(chunk.point_cloud),
         'ground_points_classified': chunk.point_cloud.point_count_by_class.get(2, 0) > 0 if chunk.point_cloud else False,
         'model_built': bool(chunk.model),
-        'elevations_built': len(chunk.elevations) > 0,
+        'dsm_built': any(getattr(e, "label", "") == "DSM" for e in getattr(chunk, "elevations", [])),
+        'dtm_built': any(getattr(e, "label", "") == "DTM" for e in getattr(chunk, "elevations", [])),
+        'chm_built': any(getattr(e, "label", "") == "CHM" for e in getattr(chunk, "elevations", [])),
         'orthomosaic_built': bool(chunk.orthomosaic)
     }
     return status
@@ -460,20 +462,19 @@ def run_reconstruction():
         else:
             print("3D model already built, skipping...")
 
-        # Set up projection for DEM and orthomosaic
+        # Set up projection for elevation surfaces and orthomosaic
         projection = Metashape.OrthoProjection()
         projection.crs = Metashape.CoordinateSystem(epsg_code)
 
-        # Elevation surfaces
-        if not status['elevations_built']:
+        # DSM
+        if not status['dsm_built']:
             try:
-                print("Building elevation surfaces...")
+                print("Building DSM from model...")
                 compression = Metashape.ImageCompression()
                 compression.tiff_big = config['dem']['tiff_big']
                 compression.tiff_tiled = config['dem']['tiff_tiled']
                 compression.tiff_overviews = config['dem']['tiff_overviews']
-                
-                print("Building DSM from model...")
+
                 chunk.buildDem(
                     source_data=Metashape.DataSource.ModelData,
                     interpolation=Metashape.Interpolation.EnabledInterpolation,
@@ -485,7 +486,7 @@ def run_reconstruction():
                 progress_timer.reset()
                 chunk.elevation.label = "DSM"
                 doc.save()
-                
+
                 dsm_file = os.path.join(output_folder, f"{lowest_folder_name}_dsm.tif")
                 chunk.exportRaster(
                     path=dsm_file,
@@ -497,7 +498,15 @@ def run_reconstruction():
                 )
                 progress_timer.reset()
                 print("DSM exported.")
-                
+            except Exception as e:
+                print(f"Error building DSM: {e}")
+                sys.exit(1)
+        else:
+            print("DSM already built, skipping...")
+
+        # DTM
+        if not status['dtm_built']:
+            try:
                 print("Building DTM from ground points in point cloud...")
                 chunk.buildDem(
                     source_data=Metashape.DataSource.PointCloudData,
@@ -510,7 +519,7 @@ def run_reconstruction():
                 progress_timer.reset()
                 chunk.elevation.label = "DTM"
                 doc.save()
-                
+
                 dtm_file = os.path.join(output_folder, f"{lowest_folder_name}_dtm.tif")
                 chunk.exportRaster(
                     path=dtm_file,
@@ -522,7 +531,15 @@ def run_reconstruction():
                 )
                 progress_timer.reset()
                 print("DTM exported.")
-                
+            except Exception as e:
+                print(f"Error building DTM: {e}")
+                sys.exit(1)
+        else:
+            print("DTM already built, skipping...")
+
+        # CHM
+        if not status['chm_built']:
+            try:
                 print("Creating Canopy Height Model (CHM)...")
                 dsm_asset = None
                 dtm_asset = None
@@ -557,16 +574,11 @@ def run_reconstruction():
                     print("CHM exported.")
                 else:
                     print("DSM or DTM asset not found, CHM not created.")
-
-                for elevation in chunk.elevations:
-                    if elevation.label == "DSM":
-                        chunk.elevation = elevation
-                        break
             except Exception as e:
-                print(f"Error building DEMs: {e}")
+                print(f"Error building CHM: {e}")
                 sys.exit(1)
         else:
-            print("DEMs already built, skipping...")
+            print("CHM already built, skipping...")
                 
         # Orthomosaic
         if not status['orthomosaic_built']:
