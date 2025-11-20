@@ -127,6 +127,7 @@ Segment individual tree canopies from the CHM using a proximity-based watershed 
         --outdir "canopy_segmentation/sample_data/outputs/" `
         --min-height 1.75 `
         --buffer-size 1.0 `
+        --id-column Tree_ID `
         --extent "canopy_segmentation/sample_data/inputs/20230823_Orchard4_boundary.shp"
     ```
 
@@ -136,6 +137,7 @@ Segment individual tree canopies from the CHM using a proximity-based watershed 
 - `--outdir` (required): Output directory
 - `--min-height` (optional): Minimum CHM height for segmentation (default: 1.75)
 - `--buffer-size` (optional): Buffer (meters) for refining tree markers to local maxima (default: 1.0)
+- `id-column` (optional): Column name for original tree IDs in marker shapefile (e.g., Tree_ID). If not provided, the first non-geometry column will be used.
 - `--extent` (optional): Polygon shapefile for processing extent
 
 ---
