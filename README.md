@@ -87,7 +87,7 @@ Generate georeferenced orthomosaics, elevation surfaces, and point clouds from d
     ```
 3. Run the reconstruction script:
     ```
-    python flight_reconstruction/reconstruction.py `
+    python -m flight_reconstruction.reconstruction `
         --config "flight_reconstruction/config.yml" `
         --folder "flight_reconstruction/sample_data/20230823_Orchard4"
     ```
