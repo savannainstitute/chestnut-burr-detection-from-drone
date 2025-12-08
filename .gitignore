@@ -1,5 +1,5 @@
 /burr_detection/sample_data
 /canopy_segmentation/sample_data
 /flight_reconstruction/sample_data
-/image_selection/outputs
 *.pyc
+/image_selection/sample_data
