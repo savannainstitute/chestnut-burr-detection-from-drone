@@ -35,14 +35,12 @@ class TreeCanopySegmentation:
         Returns:
             None
         """
-        self.penalty_strength = 0.1
-        self.boundary_penalty_weight = 1.0
-        self.gradient_weight = 0.4
-        self.watershed_compactness = 0.0001
-        self.base_height_factor = 0.8
-        self.height_factor_scale = 0.2
-        self.min_height = min_height
-        self.surface_smooth_sigma = 0.5
+        self.penalty_strength = 0.1             # lower if smaller trees take up too much space
+        self.gradient_weight = 0.4              # higher to follow steep slopes more closely
+        self.watershed_compactness = 1e-4       # higher for more regular shapes
+        self.height_factor_scale = 0.2          # higher places boundaries further out for taller trees
+        self.min_height = min_height            # minimum height in meters for segmentation mask
+        self.surface_smooth_sigma = 0.1         # higher for smoother segmentation surface
 
         self.chm_path = chm_path
         self.chm_data = None
@@ -293,7 +291,7 @@ class TreeCanopySegmentation:
                 else:
                     height_ratio = marker_height / nearest_neighbor_height
 
-                height_factor = self.base_height_factor + self.height_factor_scale * np.clip(height_ratio, 0.5, 1.5)
+                height_factor = 0.8 + self.height_factor_scale * np.clip(height_ratio, 0.5, 1.5)
 
                 local_characteristic_distance = (nearest_distance / 2.0) * height_factor
 
@@ -325,7 +323,7 @@ class TreeCanopySegmentation:
                                      self.penalty_strength * height_range, proximity_penalty)
 
         inv_height = np.where(np.isfinite(smoothed_chm), -smoothed_chm, 0.0)
-        surface = inv_height + (self.boundary_penalty_weight * proximity_penalty) + (self.gradient_weight * gradient_mag)
+        surface = inv_height + proximity_penalty + (self.gradient_weight * gradient_mag)
 
         self.segments = watershed(
             surface, 
