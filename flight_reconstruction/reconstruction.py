@@ -580,7 +580,7 @@ def run_reconstruction():
         # Orthomosaic
         if not status['orthomosaic_built']:
             try:
-                print("Building orthomosaic from DSM...")
+                print("Building orthomosaic from Mesh...")
                 blend_str = config['orthomosaic']['blending_mode'].lower()
                 if blend_str == "mosaic":
                     blend_mode = Metashape.BlendingMode.MosaicBlending
@@ -594,7 +594,7 @@ def run_reconstruction():
                     blend_mode = Metashape.BlendingMode.DisabledBlending
                 
                 chunk.buildOrthomosaic(
-                    surface_data=Metashape.DataSource.ElevationData, 
+                    surface_data=Metashape.DataSource.ModelData, 
                     blending_mode=blend_mode, 
                     ghosting_filter=config['orthomosaic']['ghosting_filter'],  
                     fill_holes=config['orthomosaic']['fill_holes'],
