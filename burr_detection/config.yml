@@ -1,0 +1,51 @@
+# YOLO Burr Detection Configuration
+
+model:
+  size: yolov8s.pt
+  imgsz: 416
+
+training:
+  # Optimizer settings
+  lr0: 0.002959465112197289
+  lrf: 0.04960784506778433
+  optimizer: AdamW
+  momentum: 0.884291347164286
+  weight_decay: 0.0015351465935149193
+  
+  # Warmup settings
+  warmup_epochs: 2.3981165213128355
+  warmup_momentum: 0.8848158914867282
+  
+  # Loss weights
+  box_gain: 17.485873380185964
+  cls_gain: 0.7234836012716201
+  dfl_gain: 2.5783871489486088
+  
+  # Color augmentation
+  hsv_h: 0.00397442912216547
+  hsv_s: 0.12119192046833861
+  hsv_v: 0.2160270070090469
+  
+  # Geometric augmentation
+  degrees: 1.4078181556453864
+  scale: 0.9460774245407135
+  shear: 0.12454885803000774
+  perspective: 1.0493940700358834e-06
+  
+  # Advanced augmentation
+  mosaic: 0.13712063692939191
+  mixup: 0.032347819217911
+  copy_paste: 0.09804568278256452
+  dropout: 0.1679538062399133
+
+inference:
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+  tile_size: 224
+  overlap: 0.2
+  max_visualizations: 10
+
+data:
+  training_dir: burr_detection/sample_data/training/inputs
+  default_image_selections: image_selection/sample_data/outputs/best_canopy_selections.json
+  default_canopy_shapefile: canopy_segmentation/sample_data/outputs/canopy_shapefile.shp
