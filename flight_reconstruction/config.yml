@@ -12,9 +12,9 @@ image_quality:
 
 # Photo matching parameters
 photo_matching:
-  downscale: 1
-  keypoint_limit: 60000
-  keypoint_limit_per_mpx: 1500
+  downscale: 0
+  keypoint_limit: 100000
+  keypoint_limit_per_mpx: 2500
   tiepoint_limit: 0
   generic_preselection: false
   reference_preselection: true
@@ -66,7 +66,7 @@ tie_point_filtering:
 
 # Depth maps parameters
 depth_maps:
-  downscale: 2
+  downscale: 1
   filter_mode: "disabled"  # Options: "mild", "moderate", "aggressive", "disabled"
   reuse_depth: false
   max_neighbors: 64
@@ -114,10 +114,10 @@ dem:
 # Orthomosaic parameters
 orthomosaic:
   blending_mode: "mosaic"
-  ghosting_filter: false
+  ghosting_filter: true
   fill_holes: true
-  cull_faces: false
-  refine_seamlines: true
+  cull_faces: true
+  refine_seamlines: false
   subdivide_task: false
   
   # Export parameters
