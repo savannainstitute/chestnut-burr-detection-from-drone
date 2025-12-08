@@ -11,7 +11,7 @@ This repository contains a modular pipeline for estimating chestnut tree burr yi
 1. **Flight Reconstruction**: Generate georeferenced orthomosaics (UTM projections), elevation surfaces (DSM/DTM/CHM), and point clouds (SfM) from drone imagery using Agisoft Metashape.
 2. **Canopy Segmentation**: Segment individual tree canopies from the CHM using a proximity-based watershed algorithm with control markers.
 3. **Image Selection**: Select the best drone image for each segmented canopy using image quality and sensor parameters.
-4. **Burr Detection**: (Coming soon) Detect and count burrs for each tree.
+4. **Burr Detection**: Detect and count burrs for each tree using YOLO.
 
 This README documents steps 1–3. Sample data for a full test run is available (see below).
 
@@ -51,7 +51,7 @@ Sample data for a chestnut orchard is available via Google Drive as a ZIP file.
     ```
 4. **Install Agisoft Metashape from the provided wheel file:**
     ```
-    pip install flight_reconstruction/Metashape-2.2.2-cp37.cp38.cp39.cp310.cp311-none-win_amd64.whl
+    pip3 install flight_reconstruction/Metashape-2.2.2-cp37.cp38.cp39.cp310.cp311-none-win_amd64.whl
     ```
 5. **Activate a Metashape Professional license.** (See Agisoft documentation)
 6. **Download and extract the sample data from Google Drive** (see above).
@@ -76,7 +76,7 @@ Generate georeferenced orthomosaics, elevation surfaces, and point clouds from d
     - Orthomosaic: `flight_reconstruction/sample_data/20230823_Orchard4/outputs/20230823_Orchard4_orthomosaic.tif`
     - Report: `flight_reconstruction/sample_data/20230823_Orchard4/outputs/20230823_Orchard4_report.pdf` 
 
-**Usage:**
+**Usage (PowerShell):**
 1. Activate the conda environment:
     ```
     conda activate burr-detection
@@ -98,7 +98,6 @@ Generate georeferenced orthomosaics, elevation surfaces, and point clouds from d
 
 ---
 
-
 ## Step 2: Canopy Segmentation
 
 Segment individual tree canopies from the CHM using a proximity-based watershed algorithm with control markers.
@@ -114,19 +113,19 @@ Segment individual tree canopies from the CHM using a proximity-based watershed 
     - Canopies: `canopy_segmentation/sample_data/outputs/20230823_Orchard4_Canopies.shp` (polygons)
     - Treetops: `canopy_segmentation/sample_data/outputs/20230823_Orchard4_Treetops.shp` (points)
 
-**Usage:**
+**Usage (PowerShell):**
 1. Activate the conda environment:
     ```
     conda activate burr-detection
     ```
 2. Run the segmentation script:
     ```
-    python canopy_segmentation/segmentation.py `
+    python -m canopy_segmentation.segmentation `
         --chm "flight_reconstruction/sample_data/20230823_Orchard4/outputs/20230823_Orchard4_chm.tif" `
         --tree-markers "canopy_segmentation/sample_data/inputs/20230823_Orchard4_tree_markers.shp" `
         --outdir "canopy_segmentation/sample_data/outputs/" `
         --min-height 1.75 `
-        --buffer-size 1.0 `
+        --buffer-size 0.5 `
         --id-column Tree_ID `
         --extent "canopy_segmentation/sample_data/inputs/20230823_Orchard4_boundary.shp"
     ```
@@ -136,7 +135,7 @@ Segment individual tree canopies from the CHM using a proximity-based watershed 
 - `--tree-markers` (required): Tree marker shapefile
 - `--outdir` (required): Output directory
 - `--min-height` (optional): Minimum CHM height for segmentation (default: 1.75)
-- `--buffer-size` (optional): Buffer (meters) for refining tree markers to local maxima (default: 1.0)
+- `--buffer-size` (optional): Buffer (meters) for refining tree markers to local maxima (default: 0.5)
 - `id-column` (optional): Column name for original tree IDs in marker shapefile (e.g., Tree_ID). If not provided, the first non-geometry column will be used.
 - `--extent` (optional): Polygon shapefile for processing extent
 
@@ -153,22 +152,21 @@ Select the best drone image for each segmented canopy using image quality and se
     - Metashape project: `flight_reconstruction/sample_data/20230823_Orchard4/outputs/project_20230823_Orchard4.psx`  
     - Raw images: `flight_reconstruction/sample_data/20230823_Orchard4/`
 - **Outputs:**  
-    - Sorted image/canopy mapping: `image_selection/easyidp_outputs/img_dict_sort.json`  
-    - Best cropped images: `image_selection/easyidp_outputs/best_cropped_images/`
+    - Best canopy selections: `image_selection/outputs/best_canopy_selections.json`
 
-**Usage:**
+**Usage (PowerShell):**
 1. Activate the conda environment:
     ```
     conda activate burr-detection
     ```
 2. Run the image selection script:
     ```
-    python image_selection/canopy_to_image.py `
+    python -m image_selection.canopy_to_image `
         --canopy_shapefile "canopy_segmentation/sample_data/outputs/20230823_Orchard4_Canopies.shp" `
         --dsm "flight_reconstruction/sample_data/20230823_Orchard4/outputs/20230823_Orchard4_dsm.tif" `
         --metashape_project "flight_reconstruction/sample_data/20230823_Orchard4/outputs/project_20230823_Orchard4.psx" `
         --raw_images "flight_reconstruction/sample_data/20230823_Orchard4" `
-        --output "image_selection/easyidp_outputs"
+        --output "image_selection/sample_data/outputs"
     ```
 
 **Arguments:**
@@ -176,7 +174,7 @@ Select the best drone image for each segmented canopy using image quality and se
 - `--dsm` (required): Path to the DSM raster file
 - `--metashape_project` (required): Path to the Metashape project file (.psx)
 - `--raw_images` (required): Path to the folder containing raw drone images
-- `--output` (required): Output directory for results (JSON mapping and cropped images)
+- `--output` (required): Output directory for results (best image-canopy mapping JSON)
 
 ---
 
