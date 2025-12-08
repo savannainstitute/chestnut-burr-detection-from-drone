@@ -5,12 +5,17 @@ dependencies:
   - gdal=3.10.3
   - geopandas=1.1.1
   - python=3.11.14
-  - pip=25.2
+  - pip=25.3
   - psutil=7.0.0
   - rasterio=1.4.3
   - scikit-image=0.25.2
   - shapely=2.1.2
   - pip:
     - easyidp
+    - optuna
     - pyexiv2
     - pyyaml
+    - "ray[tune]"
+    - ultralytics
+
+    # pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu130
