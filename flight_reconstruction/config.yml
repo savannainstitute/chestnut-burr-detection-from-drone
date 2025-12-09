@@ -12,9 +12,9 @@ image_quality:
 
 # Photo matching parameters
 photo_matching:
-  downscale: 0
-  keypoint_limit: 100000
-  keypoint_limit_per_mpx: 2500
+  downscale: 1
+  keypoint_limit: 80000
+  keypoint_limit_per_mpx: 2000
   tiepoint_limit: 0
   generic_preselection: false
   reference_preselection: true
@@ -66,7 +66,7 @@ tie_point_filtering:
 
 # Depth maps parameters
 depth_maps:
-  downscale: 1
+  downscale: 2
   filter_mode: "disabled"  # Options: "mild", "moderate", "aggressive", "disabled"
   reuse_depth: false
   max_neighbors: 64
