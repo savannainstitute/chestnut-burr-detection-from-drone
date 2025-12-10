@@ -207,39 +207,35 @@ Detect and count burrs for each tree using YOLO object detection models. Support
 
 
 **Usage (PowerShell):**
+1. Activate the conda environment:
+    ```
+    conda activate burr-detection
+    ```
 
 **Note:** If using a CUDA-enabled GPU (recommended), install PyTorch with CUDA from wheel before running:
-```powershell
-conda activate burr-detection
-
-pip3 install -U torch torchvision --index-url https://download.pytorch.org/whl/cu130
-```
+    ```
+    pip3 install -U torch torchvision --index-url https://download.pytorch.org/whl/cu130
+    ```
 
 ### 4a. Training Mode
 
-Train a YOLO model using multi-step progressive training:
-
-```powershell
-conda activate burr-detection
-
-python -m burr_detection.detection --mode train `
-    --config "burr_detection/config.yml"
-```
+2. Train a YOLO model using multi-step progressive training:
+    ```
+    python -m burr_detection.detection --mode train `
+        --config "burr_detection/config.yml"
+    ```
 
 **Arguments:**
 - `--config` (optional): Path to configuration file (default: `burr_detection/config.yml`)
 
 ### 4b. Tuning Mode
 
-Optimize hyperparameters using Ray Tune with Optuna search:
-
-```powershell
-conda activate burr-detection
-
-python -m burr_detection.detection --mode tune `
-    --num-samples 50 `
-    --config "burr_detection/config.yml"
-```
+2. Optimize hyperparameters using Ray Tune with Optuna search:
+    ```
+    python -m burr_detection.detection --mode tune `
+        --num-samples 50 `
+        --config "burr_detection/config.yml"
+    ```
 
 **Arguments:**
 - `--num-samples` (required): Number of hyperparameter combinations to try
@@ -247,18 +243,15 @@ python -m burr_detection.detection --mode tune `
 
 ### 4c. Inference Mode
 
-Detect burrs on unlabeled drone imagery:
-
-```powershell
-conda activate burr-detection
-
-python -m burr_detection.detection --mode inference `
-    --image-selections "image_selection/sample_data/outputs/best_image_selections.json" `
-    --output "burr_detection/sample_data/inference/outputs" `
-    --conf-threshold 0.5 `
-    --iou-threshold 0.45 `
-    --plot-mode subset
-```
+2. Detect burrs on unlabeled drone imagery:
+    ```
+    python -m burr_detection.detection --mode inference `
+        --image-selections "image_selection/sample_data/outputs/best_image_selections.json" `
+        --output "burr_detection/sample_data/inference/outputs" `
+        --conf-threshold 0.5 `
+        --iou-threshold 0.45 `
+        --plot-mode subset
+    ```
 
 **Arguments:**
 - `--image-selections` (required): JSON file with tree canopy polygons (from Step 3)
