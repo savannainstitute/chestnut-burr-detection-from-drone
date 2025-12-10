@@ -11,9 +11,9 @@ This repository contains a modular pipeline for estimating chestnut tree burr yi
 1. **Flight Reconstruction**: Generate georeferenced orthomosaics (UTM projections), elevation surfaces (DSM/DTM/CHM), and point clouds (SfM) from drone imagery using Agisoft Metashape.
 2. **Canopy Segmentation**: Segment individual tree canopies from the CHM using a proximity-based watershed algorithm with control markers.
 3. **Image Selection**: Select the best drone image for each segmented canopy using image quality and sensor parameters.
-4. **Burr Detection**: Detect and count burrs for each tree using YOLO.
+4. **Burr Detection**: Detect and count burrs for each tree using YOLO. Also supports training and hyperparameter tuning.
 
-This README documents steps 1–3. Sample data for a full test run is available (see below).
+This README documents each step. Sample data for a full test run is available via Google Drive (see below).
 
 ---
 
@@ -60,11 +60,11 @@ Sample data for a chestnut orchard is available via Google Drive as a ZIP file.
 
 ## Step 1: Flight Reconstruction
 
-Generate georeferenced orthomosaics, elevation surfaces, and point clouds from drone imagery using Agisoft Metashape.
+Generate georeferenced orthomosaics, point clouds, and elevation surfaces from drone imagery using Agisoft Metashape. Optimized for DJI Mavic 3M. 
 
 - **Script:** `flight_reconstruction/reconstruction.py`
 - **Config:** `flight_reconstruction/config.yml`
-- **Sample Data:**  
+- **Sample Input Data:**  
     - Raw images and navigation files (for RTK): `flight_reconstruction/sample_data/20230823_Orchard4/`
 - **Outputs:** 
     - Metashape project: `flight_reconstruction/sample_data/20230823_Orchard4/outputs/project_20230823_Orchard4.psx` 
@@ -102,10 +102,10 @@ Generate georeferenced orthomosaics, elevation surfaces, and point clouds from d
 
 Segment individual tree canopies from the CHM using a proximity-based watershed algorithm with control markers.
 
-*Note: In future releases, this step will be replaced with the SEConD model, which will allow canopy segmentation without the need for manually created control markers. For now, tree markers can be manually digitized using leaf-off imagery or collected via RTK GPS.*
+*Note: Tree markers can be manually digitized using leaf-off imagery or collected with an RTK GNSS receiver.*
 
 - **Script:** `canopy_segmentation/segmentation.py`
-- **Sample Data:**  
+- **Sample Input Data:**  
     - CHM: `flight_reconstruction/sample_data/20230823_Orchard4/outputs/20230823_Orchard4_chm.tif`
     - Tree markers: `canopy_segmentation/sample_data/inputs/20230823_Orchard4_tree_markers.shp`  
     - Boundary shapefile (optional): `canopy_segmentation/sample_data/inputs/20230823_Orchard4_boundary.shp`
@@ -146,13 +146,13 @@ Segment individual tree canopies from the CHM using a proximity-based watershed 
 Select the best drone image for each segmented canopy using image quality and sensor parameters.
 
 - **Script:** `image_selection/canopy_to_image.py`
-- **Sample Data:**  
+- **Sample Input Data:**  
     - Canopy polygons: `canopy_segmentation/sample_data/outputs/20230823_Orchard4_Canopies.shp`  
     - DSM: `flight_reconstruction/sample_data/20230823_Orchard4/outputs/20230823_Orchard4_dsm.tif`  
     - Metashape project: `flight_reconstruction/sample_data/20230823_Orchard4/outputs/project_20230823_Orchard4.psx`  
     - Raw images: `flight_reconstruction/sample_data/20230823_Orchard4/`
 - **Outputs:**  
-    - Best canopy selections: `image_selection/outputs/best_canopy_selections.json`
+    - Best canopy selections: `image_selection/sample_data/outputs/best_canopy_selections.json`
 
 **Usage (PowerShell):**
 1. Activate the conda environment:
@@ -178,6 +178,117 @@ Select the best drone image for each segmented canopy using image quality and se
 
 ---
 
+## Step 4: Burr Detection
+
+Detect and count burrs for each tree using YOLO object detection models. Supports training, hyperparameter tuning, and inference on new drone imagery.
+
+- **Main Sctipt:** `burr_detection/detection.py` 
+- **Supplemental scripts:** `burr_detection/training.py`, `burr_detection/tuning.py`, `burr_detection/dataset.py`, `burr_detection/utils.py`
+- **Config:** `burr_detection/config.yml`
+- **Sample Input Data (Tuning, Training):**
+    - Training images/labels: `burr_detection/sample_data/training/inputs/images/`, `burr_detection/sample_data/training/inputs/labels/`
+- **Sample Input Data (Inference):**
+    - Canopy selections: `image_selection/sample_data/outputs/best_image_selections.json`
+- **Outputs (Training):**
+    - Best model: `burr_detection/sample_data/training/outputs/training_<timestamp>/best_training_weights.pt`
+    - Training history: `burr_detection/sample_data/training/outputs/training_<timestamp>/train_step*/`
+    - Test results: `burr_detection/sample_data/training/outputs/training_<timestamp>/test_results.csv`
+    - Dataset config: `burr_detection/sample_data/training/outputs/training_<timestamp>/dataset.yaml`
+- **Outputs (Tuning):**
+    - Best model: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/best_<model>_model.pt`
+    - Tuning history: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/tuning_history.csv`
+    - Best model training history: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/best_trial_training_history.csv`
+    - Dataset config: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/dataset.yaml`
+- **Outputs (Inference):**
+    - Burr counts per tree: `burr_detection/sample_data/inference/outputs/inference_<timestamp>/tree_burr_detections.csv`
+    - Detection summary: `burr_detection/sample_data/inference/outputs/inference_<timestamp>/detection_summary.txt`
+    - Cropped canopies: `burr_detection/sample_data/inference/outputs/inference_<timestamp>/preprocessed_trees/`
+    - Prediction plots: `burr_detection/sample_data/inference/outputs/inference_<timestamp>/prediction_plots/`
+
+
+**Usage (PowerShell):**
+
+**Note:** If using a CUDA-enabled GPU (recommended), install PyTorch with CUDA from wheel before running:
+```powershell
+conda activate burr-detection
+
+pip3 install -U torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
+
+### 4a. Training Mode
+
+Train a YOLO model using multi-step progressive training:
+
+```powershell
+conda activate burr-detection
+
+python -m burr_detection.detection --mode train `
+    --config "burr_detection/config.yml"
+```
+
+**Arguments:**
+- `--config` (optional): Path to configuration file (default: `burr_detection/config.yml`)
+
+### 4b. Tuning Mode
+
+Optimize hyperparameters using Ray Tune with Optuna search:
+
+```powershell
+conda activate burr-detection
+
+python -m burr_detection.detection --mode tune `
+    --num-samples 50 `
+    --config "burr_detection/config.yml"
+```
+
+**Arguments:**
+- `--num-samples` (required): Number of hyperparameter combinations to try
+- `--config` (optional): Path to configuration file (default: `burr_detection/config.yml`)
+
+### 4c. Inference Mode
+
+Detect burrs on unlabeled drone imagery:
+
+```powershell
+conda activate burr-detection
+
+python -m burr_detection.detection --mode inference `
+    --image-selections "image_selection/sample_data/outputs/best_image_selections.json" `
+    --output "burr_detection/sample_data/inference/outputs" `
+    --conf-threshold 0.5 `
+    --iou-threshold 0.45 `
+    --plot-mode subset
+```
+
+**Arguments:**
+- `--image-selections` (required): JSON file with tree canopy polygons (from Step 3)
+- `--output` (required): Directory for detection results
+- `--model` (optional): Path to trained YOLO model (.pt file). If not specified, uses best model from last tuning run.
+- `--conf-threshold` (optional): Minimum detection confidence (default: 0.5)
+- `--iou-threshold` (optional): NMS IoU threshold for duplicate removal (default: 0.45)
+- `--plot-mode` (optional): `all`, `subset` (15 random), or `none` (default: subset)
+
+**Image Selections JSON Format:**
+```json
+{
+  "tree_001": {
+    "image_path": "/path/to/drone_image.jpg",
+    "polygon_coords": [[x1, y1], [x2, y2], [x3, y3], ...]
+  },
+  "tree_002": { ... }
+}
+```
+
+**Inference Pipeline:**
+1. Crop canopy regions from drone images using polygon masks
+2. Tile cropped canopies into overlapping 224×224 patches
+3. Run YOLO detection on each tile
+4. Reconstruct detections into full canopy
+5. Apply NMS to remove duplicates from tile overlap
+6. Aggregate burr counts and confidences per tree
+7. Plot predictions (optional) and save results as CSV
+
+---
 
 [![CC BY-NC-SA 4.0][cc-by-nc-sa-shield]][cc-by-nc-sa]
 
