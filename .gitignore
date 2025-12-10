@@ -3,3 +3,4 @@
 /flight_reconstruction/sample_data
 *.pyc
 /image_selection/sample_data
+*.pt
