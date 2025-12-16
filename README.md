@@ -215,7 +215,7 @@ Detect and count burrs for each tree using YOLO object detection models. Support
     conda activate burr-detection
     ```
 
-**Note:** If using a CUDA-enabled GPU (recommended), install PyTorch with CUDA from wheel before running burr detection:
+**Note:** If using a CUDA-enabled GPU (recommended), install PyTorch with CUDA from wheel before running:
 ```
 pip3 install -U torch torchvision --index-url https://download.pytorch.org/whl/cu130
 `````
