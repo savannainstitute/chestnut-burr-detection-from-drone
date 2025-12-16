@@ -3,6 +3,7 @@ import datetime
 import errno
 import os
 import time
+import yaml
 import numpy as np
 import random
 import matplotlib.pyplot as plt
@@ -10,12 +11,17 @@ import matplotlib.patches as patches
 from pathlib import Path
 import numpy as np
 from PIL import Image
+import pandas as pd
+from ultralytics import YOLO
+
 
 import torch
 import torch.distributed as dist
 from typing import List, Dict
 
+from ray import tune
 
+## Adapted from PyTorch  detection utils: https://github.com/pytorch/vision/blob/main/references/detection/utils.py
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
     window or the global series average.
@@ -329,6 +335,31 @@ def apply_nms(detections: List[Dict], iou_threshold: float = 0.45) -> List[Dict]
     return [detections[i] for i in keep_indices.tolist()]
 
 
+## Other
+def load_config(config_path: str) -> Dict:
+    """Load configuration from YAML file"""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
+
+def convert_tuning_space(space):
+    tuning_space = {}
+    for k, v in space.items():
+        if isinstance(v, list):
+            tuning_space[k] = tune.choice(v)
+        elif isinstance(v, dict):
+            if 'uniform' in v:
+                tuning_space[k] = tune.uniform(*v['uniform'])
+            elif 'loguniform' in v:
+                tuning_space[k] = tune.loguniform(*v['loguniform'])
+            else:
+                raise ValueError(f"Unknown distribution for {k}: {v}")
+        else:
+            raise ValueError(f"Unknown type for {k}: {v}")
+    return tuning_space
+
+
 def set_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -337,29 +368,97 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def format_test_results(test_results):
-    """Format YOLO test evaluation results in a clean, readable way"""
+def is_notebook():
+    try:
+        from IPython.core.getipython import get_ipython
+        shell = get_ipython().__class__.__name__
+        return shell == 'ZMQInteractiveShell'
+    except Exception:
+        return False
 
-    metrics = test_results.results_dict
 
-    print("\nYOLO Model Evaluation on Test Set")
-    print("=" * 50)
-    print(f"Class Information: {test_results.names}")
-    print(f"Test Objects: {test_results.nt_per_class.sum()} instances ({test_results.nt_per_class[0]} {list(test_results.names.values())[0]})")
+def evaluate_test_set(
+    model_path: Path,
+    training_dir: Path,
+    output_dir: Path,
+    plot_mode: str = 'none',
+    conf_threshold: float = 0.5,
+    iou_threshold: float = 0.45
+):
+    """Evaluate model on test set, save results, and optionally return predictions for plotting."""
+
+    print("\n" + "="*80)
+    print("Evaluating on the test set...")
+    print("="*80)
+
+    dataset_yaml = Path(training_dir) / "dataset.yml"
+
+    if not dataset_yaml.exists():
+        raise FileNotFoundError(f"dataset.yml not found in {training_dir}. Please run prepare_dataset_splits first.")
+
+    model = YOLO(model_path)
+    test_results = model.val(data=str(dataset_yaml), split='test', verbose=False)
+
+    model_name = Path(model_path).stem.replace("best_", "")
+
+    precision = test_results.results_dict['metrics/precision(B)']
+    recall = test_results.results_dict['metrics/recall(B)']
+    f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
+    test_metrics = {
+        'model_name': model_name,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1, 
+        'mAP50': test_results.results_dict['metrics/mAP50(B)'],
+        'fitness': test_results.results_dict['fitness'],
+        'inference_time_ms': test_results.speed['inference'],
+        'model_path': str(model_path)
+    }
+
+    print("Test Performance:")
+    for k, v in test_metrics.items():
+        print(f"{k}: {v}")
     
-    print("\nPerformance Metrics:")
-    print(f"  • Precision:     {metrics['metrics/precision(B)']:.4f}")
-    print(f"  • Recall:        {metrics['metrics/recall(B)']:.4f}")
-    print(f"  • mAP@0.5:       {metrics['metrics/mAP50(B)']:.4f}")
-    print(f"  • mAP@0.5-0.95:  {metrics['metrics/mAP50-95(B)']:.4f}")
-    print(f"  • Overall Fitness: {metrics['fitness']:.4f}")
-    
-    print("\nSpeed Performance:")
-    print(f"  • Preprocessing: {test_results.speed['preprocess']:.2f}ms")
-    print(f"  • Inference:     {test_results.speed['inference']:.2f}ms")
-    print(f"  • Postprocessing: {test_results.speed['postprocess']:.2f}ms")
-    print(f"  • Total per image: {test_results.speed['preprocess'] + test_results.speed['inference'] + test_results.speed['postprocess']:.2f}ms")
-    print("=" * 50)
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([test_metrics]).to_csv(
+        Path(output_dir) / "test_results.csv", 
+        index=False
+    )
+
+    if plot_mode == 'none':
+        return None
+
+    with open(dataset_yaml, 'r') as f:
+        ds = yaml.safe_load(f)
+    test_txt = Path(ds['test'])
+    if not test_txt.is_absolute():
+        test_txt = (dataset_yaml.parent / test_txt).resolve()
+    with open(test_txt, 'r') as f:
+        test_image_paths = [line.strip() for line in f if line.strip()]
+
+    predictions = []
+    results = model.predict(
+        test_image_paths,
+        conf=conf_threshold,
+        iou=iou_threshold,
+        verbose=False
+    )
+    for img_path, pred in zip(test_image_paths, results):
+        detections = []
+        if pred.boxes is not None and len(pred.boxes) > 0:
+            boxes = pred.boxes.xyxy.cpu().numpy()
+            confs = pred.boxes.conf.cpu().numpy()
+            labels = pred.boxes.cls.cpu().numpy() if hasattr(pred.boxes, 'cls') else np.zeros(len(boxes))
+            for box, conf, label in zip(boxes, confs, labels):
+                detections.append({
+                    'box': [float(x) for x in box],
+                    'confidence': float(conf),
+                    'label': int(label)
+                })
+        predictions.append((img_path, detections))
+
+    return predictions
 
 
 def plot_ground_truth_vs_predictions(predictions, labels_dir, original_images_dir, save_dir=None, conf_threshold=0.5):
@@ -390,8 +489,7 @@ def plot_ground_truth_vs_predictions(predictions, labels_dir, original_images_di
             avg_conf = np.mean([d['confidence'] for d in detections])
         else:
             avg_conf = 0.0
-        
-        # plot predictions
+
         if labels_dir: # tuning or training mode - show ground truth vs predictions
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(20, 10))
             
@@ -400,30 +498,33 @@ def plot_ground_truth_vs_predictions(predictions, labels_dir, original_images_di
             ax1.set_title('Ground Truth', fontsize=16, weight='bold')
 
             label_file = labels_dir / f"{img_path.stem}.txt"
+            print(f"Looking for label file: {label_file} (exists: {label_file.exists()})")
             if label_file.exists():
                 try:
                     gt_data = np.loadtxt(label_file, ndmin=2)
+                    print(f"Loaded label data for {label_file}: shape {gt_data.shape}")
+                    if gt_data.ndim == 1:
+                        gt_data = gt_data[None, :]
                     if gt_data.shape[0] > 0:
                         for row in gt_data:
                             _, cx_norm, cy_norm, w_norm, h_norm = row
-                            
                             cx = cx_norm * img_width
                             cy = cy_norm * img_height
                             w = w_norm * img_width
                             h = h_norm * img_height
-                            
                             x1 = cx - w/2
                             y1 = cy - h/2
-                            
                             rect = patches.Rectangle(
                                 (x1, y1), w, h,
-                                linewidth=0.5,
+                                linewidth=0.75,
                                 edgecolor='red', 
                                 facecolor='none'
                             )
                             ax1.add_patch(rect)
-                except:
-                    pass
+                    else:
+                        print(f"Label file {label_file} loaded but no rows found.")
+                except Exception as e:
+                    print(f"Error loading label file {label_file}: {e}")
 
             ax2.imshow(img)
             ax2.axis('off')
@@ -434,15 +535,13 @@ def plot_ground_truth_vs_predictions(predictions, labels_dir, original_images_di
                     x1, y1, x2, y2 = det['box']
                     width = x2 - x1
                     height = y2 - y1
-                    
                     rect = patches.Rectangle(
                         (x1, y1), width, height,
-                        linewidth=0.5,
+                        linewidth=0.75,
                         edgecolor='red', 
                         facecolor='none'
                     )
                     ax2.add_patch(rect)
-            
             fig.suptitle(f'{img_path.name}', fontsize=18, weight='bold')
             
         else:  # Inference mode - show predictions only
@@ -461,7 +560,7 @@ def plot_ground_truth_vs_predictions(predictions, labels_dir, original_images_di
                     
                     rect = patches.Rectangle(
                         (x1, y1), width, height,
-                        linewidth=0.5, 
+                        linewidth=0.75, 
                         edgecolor='red', 
                         facecolor='none'
                     )
