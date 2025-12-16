@@ -78,10 +78,8 @@ inference:
   model_path: null # specify path to model .pt, or use most-recent from training/tuning
   conf_threshold: 0.5
   iou_threshold: 0.45
-  tile_size: 224
-  overlap: 0.2
 
 data:
   training_dir: burr_detection/sample_data/training/inputs
-  default_image_selections: image_selection/sample_data/outputs/best_image_selections.json
+  image_selections: image_selection/sample_data/outputs/best_image_selections.json
   output_dir: burr_detection/sample_data/inference/outputs
