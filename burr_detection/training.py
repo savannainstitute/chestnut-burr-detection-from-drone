@@ -15,7 +15,8 @@ import logging
 import torch
 from ultralytics import YOLO
 
-from burr_detection.utils import SmoothedValue, MetricLogger, set_seed, evaluate_test_set, plot_ground_truth_vs_predictions
+from burr_detection.utils import (SmoothedValue, MetricLogger, set_seed, evaluate_test_set, 
+                                  plot_ground_truth_vs_predictions, get_output_dir)
 
 
 class YOLOTrainer:
@@ -43,7 +44,7 @@ class YOLOTrainer:
         self.best_model_path = None
         logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
-    def train(self, yolo_data_dir, output_dir=None, config=None, plot_mode='none', conf_threshold=0.5, iou_threshold=0.45):
+    def train(self, yolo_data_dir, config=None, conf_threshold=0.5, iou_threshold=0.45, plot_mode='subset'):
         if config is None:
             config = {}
         set_seed(666)
@@ -68,11 +69,10 @@ class YOLOTrainer:
         if device == "cpu":
             print(f"CUDA not available, using CPU for training")
 
-        if output_dir is None:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            output_dir = Path(yolo_data_dir).parent / "outputs" / f"training_{timestamp}"
-        else:
-            output_dir = Path(output_dir)
+
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        base = str(Path(yolo_data_dir).parent / "outputs")
+        output_dir = get_output_dir(base, "training", timestamp)
         output_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir = output_dir
 
@@ -207,8 +207,8 @@ class YOLOTrainer:
             final_weights_path = Path(output_dir) / "best_model_weights.pt"
             if final_weights:
                 shutil.copy2(final_weights, final_weights_path)
-            self.final_weights_path = final_weights_path
-            self.best_model_path = best_model_path
+            self.final_weights_path = Path(final_weights_path)
+            self.best_model_path = Path(best_model_path)
             print(f"Final weights saved to: {final_weights_path}")
 
             self.test_preds = evaluate_test_set(
