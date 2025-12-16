@@ -137,3 +137,33 @@ class YOLOInference:
                 save_dir=plot_dir,
                 conf_threshold=self.conf_threshold
             )
+
+        processed_trees = len(self.results_data)
+        total_burrs = int(self.results_df['total_detections'].sum()) if processed_trees > 0 else 0
+        avg_burrs_per_tree = float(self.results_df['total_detections'].mean()) if processed_trees > 0 else 0.0
+        min_burrs = int(self.results_df['total_detections'].min()) if processed_trees > 0 else 0
+        max_burrs = int(self.results_df['total_detections'].max()) if processed_trees > 0 else 0
+        avg_confidence = float(self.results_df['avg_confidence'].mean()) if processed_trees > 0 else 0.0
+
+        summary_text = f"""
+        Burr Detection Summary
+        {'='*50}
+        Processed Trees: {processed_trees}
+        Total Burrs Detected: {total_burrs}
+        Average Burrs per Tree: {avg_burrs_per_tree}
+        Min Burrs: {min_burrs}
+        Max Burrs: {max_burrs}
+        Overall Average Confidence: {avg_confidence:.3f}
+
+        Model: {self.model_path.name}
+        Confidence Threshold: {self.conf_threshold}
+        IoU Threshold: {self.iou_threshold}
+
+        Results saved to: {self.csv_path}
+        Plots saved to: {self.output_dir / 'prediction_plots'}
+        {'='*50}
+        """
+        summary_path = self.output_dir / 'detection_summary.txt'
+        with open(summary_path, 'w') as f:
+            f.write(summary_text)
+        print(summary_text)
