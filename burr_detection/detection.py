@@ -75,38 +75,7 @@ def run_inference(args, config: Dict):
     )
     inference.run()
 
-    if inference.results_df is not None and not inference.results_df.empty:
-        total_burrs = inference.results_df['total_detections'].sum()
-        avg_confidence = inference.results_df['avg_confidence'].mean()
-        processed_trees = len(inference.results_df)
-        avg_burrs_per_tree = int(round(inference.results_df['total_detections'].mean()))
-        min_burrs = inference.results_df['total_detections'].min()
-        max_burrs = inference.results_df['total_detections'].max()
-    else:
-        total_burrs = avg_confidence = processed_trees = avg_burrs_per_tree = min_burrs = max_burrs = 0
-
-    summary_text = f"""
-    Burr Detection Summary
-    {'='*50}
-    Processed Trees: {processed_trees}
-    Total Burrs Detected: {total_burrs}
-    Average Burrs per Tree: {avg_burrs_per_tree}
-    Min Burrs: {min_burrs}
-    Max Burrs: {max_burrs}
-    Overall Average Confidence: {avg_confidence:.3f}
-
-    Model: {inference.model_path.name}
-    Confidence Threshold: {inference.conf_threshold}
-    IoU Threshold: {inference.iou_threshold}
-
-    Results saved to: {inference.csv_path}
-    Plots saved to: {inference.output_dir / 'prediction_plots'}
-    {'='*50}
-    """
-    summary_path = Path(inference.output_dir) / 'detection_summary.txt'
-    with open(summary_path, 'w') as f:
-        f.write(summary_text)
-    print(summary_text)
+    print(f"Inference complete! Results saved to: {inference.output_dir}")
 
 
 def run_detection():
