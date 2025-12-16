@@ -7,9 +7,12 @@ import random
 from pathlib import Path
 from PIL import Image, ImageDraw
 from typing import List, Tuple, Dict
+import yaml
+
+from burr_detection.utils import set_seed
 
 
-def prepare_dataset(images_dir: Path, labels_dir: Path, output_dir: Path, 
+def prepare_dataset_splits(images_dir: Path, labels_dir: Path, output_dir: Path, 
                    splits: Tuple[float, float, float] = (0.7, 0.2, 0.1), 
                    seed: int = 666) -> Dict[str, int]:
     """
@@ -25,8 +28,7 @@ def prepare_dataset(images_dir: Path, labels_dir: Path, output_dir: Path,
     Returns:
         Dictionary with counts for each split
     """
-    random.seed(seed)
-    np.random.seed(seed)
+    set_seed(seed)
     
     images_dir = Path(images_dir)
     labels_dir = Path(labels_dir)
@@ -63,12 +65,22 @@ def prepare_dataset(images_dir: Path, labels_dir: Path, output_dir: Path,
         'val.txt': val_files,
         'test.txt': test_files
     }
-    
+
     for filename, files in split_files.items():
         with open(output_dir / filename, 'w') as f:
             for file_path in files:
-                f.write(f"{file_path.absolute()}\n")
+                rel_path = file_path  # relative to burr_detection/
+                f.write(f"{rel_path.as_posix()}\n")
     
+    dataset_yaml = {
+        "train": "train.txt",
+        "val": "val.txt",
+        "test": "test.txt",
+        "names": {0: "Chestnut-burr"}
+    }
+    with open(output_dir / "dataset.yml", "w") as f:
+        yaml.dump(dataset_yaml, f)
+
     counts = {
         'train': len(train_files),
         'val': len(val_files),
@@ -85,7 +97,7 @@ def prepare_dataset(images_dir: Path, labels_dir: Path, output_dir: Path,
 
 
 class CanopyTiler:
-    """Handle cropping, tiling, and detection reconstruction for canopy images"""
+    """Handle cropping, tiling, and detection reconstruction for unlabeled canopy images"""
     
     def __init__(self, tile_size: int = 224, overlap: float = 0.2):
         """
