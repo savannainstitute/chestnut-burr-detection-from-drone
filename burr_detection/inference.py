@@ -11,11 +11,12 @@ from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms, ge
 from burr_detection.dataset import CanopyTiler
 
 class YOLOInference:
-    def __init__(self, model_path, conf_threshold, iou_threshold, plot_mode='none'):
+    def __init__(self, model_path, image_selections_path, conf_threshold, iou_threshold, plot_mode='none'):
         self.model_path = self._get_model_path(model_path)
         print(f"\nLoading model: {self.model_path}")
         self.model = YOLO(self.model_path)
-        self.selections = self._load_selections("image_selection/sample_data/outputs/best_image_selections.json")
+        self.image_selection_path = Path(image_selections_path)
+        self.selections = self._load_selections(self.image_selection_path)
         self.tiler = CanopyTiler(tile_size=224, overlap=0.2)
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
