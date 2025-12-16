@@ -229,7 +229,7 @@ class YOLOTuner:
                 metric_columns=metric_columns,
                 parameter_columns=parameter_columns,
                 max_progress_rows=50,
-                max_column_length=30,
+                max_column_length=40,
                 sort_by_metric=True
             )
         else:
@@ -237,7 +237,7 @@ class YOLOTuner:
                 metric_columns=metric_columns,
                 parameter_columns=parameter_columns,
                 max_progress_rows=50,
-                max_column_length=30,
+                max_column_length=40,
                 sort_by_metric=True
             )
 
