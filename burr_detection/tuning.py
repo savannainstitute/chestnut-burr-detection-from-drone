@@ -21,27 +21,24 @@ from ray.air import session
 from ultralytics import YOLO
 
 from burr_detection.training import YOLOTrainer
-from burr_detection.utils import set_seed, is_notebook, convert_tuning_space, evaluate_test_set, plot_ground_truth_vs_predictions
+from burr_detection.utils import (set_seed, is_notebook, convert_tuning_space, get_output_dir,
+                                  evaluate_test_set, plot_ground_truth_vs_predictions)
 
 class YOLOTuner:
     def __init__(
         self,
         num_samples=50,
         max_concurrent_trials=1,
-        cpus_per_trial=12,
-        gpus_per_trial=1,
         yolo_data_dir=None,
         training_steps=None,
         points_to_evaluate=None,
         tuning_space=None,
-        plot_mode='none',
         conf_threshold=0.5,
-        iou_threshold=0.45
+        iou_threshold=0.45,
+        plot_mode='subset'
     ):
         self.num_samples = num_samples
         self.max_concurrent_trials = max_concurrent_trials
-        self.cpus_per_trial = cpus_per_trial
-        self.gpus_per_trial = gpus_per_trial
         self.yolo_data_dir = str(Path(yolo_data_dir).absolute()) if yolo_data_dir else None
         self.training_steps = training_steps if training_steps is not None else []
         self.points_to_evaluate = points_to_evaluate if points_to_evaluate is not None else []
@@ -54,7 +51,7 @@ class YOLOTuner:
         self.best_trial = None
         self.best_trial_preds = None
         self.best_output_dir = None
-        self.best_model_out_path = None
+        self.best_model_path = None
         self.best_trial_config = None
 
         if not self.training_steps:
@@ -160,16 +157,16 @@ class YOLOTuner:
             self._resume_training(
                 trainer, self.yolo_data_dir, config, start_step,
                 step_epochs_completed, total_epochs_so_far, yolo_checkpoint_path,
-                ray_tune_callback, output_dir
+                ray_tune_callback
             )
         else:
-            trainer.train(self.yolo_data_dir, output_dir=output_dir, config=config)
+            trainer.train(self.yolo_data_dir, config=config)
 
         return {}
 
     def _resume_training(self, trainer, yolo_data_dir, config, start_step,
                         step_epochs_completed, total_epochs_so_far, yolo_checkpoint_path,
-                        ray_tune_callback, output_dir):
+                        ray_tune_callback):
         """Resume training from checkpoint"""
         trainer.ray_tune_callback = ray_tune_callback
         trainer._original_stdout = sys.stdout
@@ -185,7 +182,7 @@ class YOLOTuner:
             '_resume_total_epochs': total_epochs_so_far
         }
 
-        return trainer.train(yolo_data_dir, output_dir=output_dir, config=resume_config)
+        return trainer.train(yolo_data_dir, config=resume_config)
 
     def run(self, run_name=None):
         """Run hyperparameter tuning with Ray Tune"""
@@ -220,14 +217,19 @@ class YOLOTuner:
             "val_precision", "val_recall", "val_f1", "val_mAP50", "val_fitness"
         ]
         parameter_columns = [
-            "model_size", "lr0", "optimizer", "imgsz", "box_gain", "cls_gain",
-            "weight_decay", "momentum"
+            "model_size", "imgsz", "optimizer", "lr0", "lrf", "momentum", "weight_decay",
+            "warmup_epochs", "warmup_bias_lr", "warmup_momentum",
+            "box_gain", "cls_gain", "dfl_gain",
+            "hsv_h", "hsv_s", "hsv_v",
+            "degrees", "scale", "shear", "perspective",
+            "mosaic", "mixup", "copy_paste", "dropout"
         ]
         if is_notebook():
             reporter = tune.JupyterNotebookReporter(
                 metric_columns=metric_columns,
                 parameter_columns=parameter_columns,
                 max_progress_rows=50,
+                max_column_length=30
                 sort_by_metric=True
             )
         else:
@@ -235,13 +237,21 @@ class YOLOTuner:
                 metric_columns=metric_columns,
                 parameter_columns=parameter_columns,
                 max_progress_rows=50,
+                max_column_length=30,
                 sort_by_metric=True
             )
 
-        if torch.cuda.is_available():
-            resources = {"cpu": self.cpus_per_trial, "gpu": self.gpus_per_trial}
+        max_concurrent = self.max_concurrent_trials
+        available_gpus = torch.cuda.device_count()
+        available_cpus = os.cpu_count() or 2
+
+        if available_gpus > 0:
+            gpus_per_trial = available_gpus / max_concurrent
+            cpus_per_trial = max(1, available_cpus // max_concurrent)
+            resources = {"cpu": cpus_per_trial, "gpu": gpus_per_trial}
         else:
-            resources = {"cpu": self.cpus_per_trial}
+            cpus_per_trial = max(1, available_cpus // max_concurrent)
+            resources = {"cpu": cpus_per_trial}
             print("WARNING: CUDA not available. Tuning with CPU only.")
 
         tuner = tune.Tuner(
@@ -264,7 +274,7 @@ class YOLOTuner:
         self.results = tuner.fit()
 
         try:
-            self.best_output_dir = Path("burr_detection/sample_data/training/outputs") / f"tuning_{timestamp}"
+            self.best_output_dir = get_output_dir("burr_detection/sample_data/training/outputs", "tuning", timestamp)
             self.best_output_dir.mkdir(parents=True, exist_ok=True)
             results_df = self.results.get_dataframe(filter_metric='val_loss', filter_mode='min')
             results_df.to_csv(self.best_output_dir / "all_tuning_history.csv", index=False)
@@ -286,8 +296,8 @@ class YOLOTuner:
             checkpoint_dir = best_trial_dir / checkpoint_dir_name
             yolo_model_path = checkpoint_dir / "yolo_model.pt"
 
-            self.best_model_out_path = self.best_output_dir / f"best_{model_size}_model.pt"
-            shutil.copy2(yolo_model_path, self.best_model_out_path)
+            self.best_model_path = self.best_output_dir / f"best_{model_size}_model.pt"
+            shutil.copy2(yolo_model_path, self.best_model_path)
 
             best_config_path = best_trial_dir / "params.json"
             if best_config_path.exists():
@@ -301,14 +311,14 @@ class YOLOTuner:
                 "path": str(best_trial_dir),
                 "config": self.best_trial_config,
                 "metrics_dataframe": best_overall_trial.metrics_dataframe,
-                "model_path": str(self.best_model_out_path),
+                "model_path": str(self.best_model_path),
                 "output_dir": str(self.best_output_dir)
             }
 
             dataset_yaml = Path(self.yolo_data_dir) / "dataset.yml"
             if dataset_yaml.exists():
                 self.best_trial_preds = evaluate_test_set(
-                    model_path=self.best_model_out_path,
+                    model_path=self.best_model_path,
                     training_dir=Path(self.yolo_data_dir),
                     output_dir=self.best_output_dir,
                     plot_mode=self.plot_mode,
