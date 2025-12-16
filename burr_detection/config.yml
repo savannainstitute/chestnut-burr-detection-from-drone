@@ -1,44 +1,81 @@
 # YOLO Burr Detection Configuration
 
-best_known_hparams:
-  # Model settings
-  model_size: yolov8s.pt
-  imgsz: 416
+training_steps:
+  - batch: 8
+    accumulate: 1
+    max_epochs: 5
+    patience: 2
+  - batch: 8
+    accumulate: 4
+    max_epochs: 4
+    patience: 1
+  - batch: 8
+    accumulate: 16
+    max_epochs: 2
+    patience: 1
+  - batch: 8
+    accumulate: 64
+    max_epochs: 2
+    patience: 1
+  
+training_params: # or starting point for tuning 
+  - model_size: yolov8s.pt
+    imgsz: 416
+    optimizer: SGD
+    lr0: 0.007535468502919781
+    lrf: 0.006106862115975325
+    momentum: 0.860563804337033
+    weight_decay: 0.007999986538396332
+    warmup_epochs: 3
+    warmup_bias_lr: 0.0005237641264861536
+    warmup_momentum: 0.8655155814680603
+    box_gain: 14.642890413087773
+    cls_gain: 0.7502019533851836
+    dfl_gain: 1.6487943474402535
+    hsv_h: 0.0024535962939831795
+    hsv_s: 0.21180924495072723
+    hsv_v: 0.1921254122518909
+    degrees: 0.9028471314034809
+    scale: 0.9935851265818587
+    shear: 0.14716577647104162
+    perspective: 5.065853668326687e-06
+    mosaic: 0.04734403640366158
+    mixup: 0.01198115725527923
+    copy_paste: 0.06990794938558989
+    dropout: 0.1127393987394648
 
-  # Optimizer settings
-  optimizer: SGD
-  lr0: 0.007535468502919781
-  lrf: 0.006106862115975325
-  momentum: 0.860563804337033
-  weight_decay: 0.007999986538396332
-  
-  # Warmup settings
-  warmup_epochs: 2.097460945262206
-  warmup_momentum: 0.8655155814680603
-  
-  # Loss weights
-  box_gain: 14.642890413087773
-  cls_gain: 0.7502019533851836
-  dfl_gain: 1.6487943474402535
-  
-  # Color augmentation
-  hsv_h: 0.0024535962939831795
-  hsv_s: 0.21180924495072723
-  hsv_v: 0.1921254122518909
-  
-  # Geometric augmentation
-  degrees: 0.9028471314034809
-  scale: 0.9935851265818587
-  shear: 0.14716577647104162
-  perspective: 5.065853668326687e-06
-  
-  # Advanced augmentation
-  mosaic: 0.04734403640366158
-  mixup: 0.01198115725527923
-  copy_paste: 0.06990794938558989
-  dropout: 0.1127393987394648
+tuning_space:
+  model_size: ["yolo11n.pt", "yolo11s.pt", "yolov8n.pt", "yolov8s.pt"]
+  imgsz: [224, 320, 416]
+  optimizer: ["AdamW", "SGD", "Adam"]
+  lr0: {"loguniform": [0.0005, 0.01]}
+  lrf: {"loguniform": [0.001, 0.1]} # fraction of initial lr (decays towards lrf*lr0)
+  momentum: {"uniform": [0.85, 0.98]}
+  weight_decay: {"loguniform": [0.0001, 0.01]}
+  warmup_epochs: [2, 3, 4, 5]
+  warmup_bias_lr: {"loguniform": [0.000001, 0.0006]}
+  warmup_momentum: {"uniform": [0.7, 0.9]}
+  box_gain: {"uniform": [12.0, 20.0]}
+  cls_gain: {"uniform": [0.5, 2.0]}
+  dfl_gain: {"uniform": [1.5, 3.0]}
+  hsv_h: {"uniform": [0.001, 0.005]}
+  hsv_s: {"uniform": [0.1, 0.3]}
+  hsv_v: {"uniform": [0.1, 0.25]}
+  degrees: {"uniform": [0.0, 2.0]}
+  scale: {"uniform": [0.9, 1.0]}
+  shear: {"uniform": [0.0, 0.5]}
+  perspective: {"uniform": [0.0, 0.00001]}
+  mosaic: {"uniform": [0.0, 0.2]}
+  mixup: {"uniform": [0.0, 0.05]}
+  copy_paste: {"uniform": [0.0, 0.2]}
+  dropout: {"uniform": [0.0, 0.2]}
+
+ray_tune:
+  num_samples: 2
+  max_concurrent_trials: 2
 
 inference:
+  model_path: null # specify path to model .pt, or use most-recent from training/tuning
   conf_threshold: 0.5
   iou_threshold: 0.45
   tile_size: 224
@@ -48,3 +85,4 @@ inference:
 data:
   training_dir: burr_detection/sample_data/training/inputs
   default_image_selections: image_selection/sample_data/outputs/best_image_selections.json
+  output_dir: burr_detection/sample_data/inference/outputs
