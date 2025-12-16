@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict, deque
 import datetime
 import errno
@@ -14,10 +15,10 @@ from PIL import Image
 import pandas as pd
 from ultralytics import YOLO
 
-
 import torch
 import torch.distributed as dist
-from typing import List, Dict
+from torchvision.ops import nms
+from typing import List, Dict, Optional
 
 from ray import tune
 
@@ -329,7 +330,6 @@ def apply_nms(detections: List[Dict], iou_threshold: float = 0.45) -> List[Dict]
     boxes_tensor = torch.from_numpy(boxes)
     scores_tensor = torch.from_numpy(scores)
     
-    from torchvision.ops import nms
     keep_indices = nms(boxes_tensor, scores_tensor, iou_threshold)
     
     return [detections[i] for i in keep_indices.tolist()]
@@ -343,7 +343,15 @@ def load_config(config_path: str) -> Dict:
     return config
 
 
+def get_output_dir(base: str, run_type: str, timestamp: Optional[str] = None) -> Path:
+    """Return a standardized output directory: base/{run_type}_{timestamp}"""
+    if timestamp is None:
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+    return Path(base) / f"{run_type}_{timestamp}"
+
+
 def convert_tuning_space(space):
+    """Convert config's dict-based tuning space to Ray Tune format"""
     tuning_space = {}
     for k, v in space.items():
         if isinstance(v, list):
@@ -361,6 +369,7 @@ def convert_tuning_space(space):
 
 
 def set_seed(seed):
+    """Set random seed for reproducibility"""
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -369,6 +378,7 @@ def set_seed(seed):
 
 
 def is_notebook():
+    """Check if running in a Jupyter notebook"""
     try:
         from IPython.core.getipython import get_ipython
         shell = get_ipython().__class__.__name__
