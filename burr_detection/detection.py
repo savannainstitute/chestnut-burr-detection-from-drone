@@ -69,6 +69,7 @@ def run_inference(args, config: Dict):
 
     inference = YOLOInference(
         model_path=config['inference']['model_path'], 
+        image_selections_path=config['data']['image_selections'],
         conf_threshold=config['inference']['conf_threshold'],
         iou_threshold=config['inference']['iou_threshold'],
         plot_mode=args.plot_mode
