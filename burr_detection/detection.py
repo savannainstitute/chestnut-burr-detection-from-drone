@@ -6,8 +6,6 @@ import argparse
 
 from pathlib import Path
 from typing import Dict
-import os
-import torch
 
 from burr_detection.training import YOLOTrainer
 from burr_detection.tuning import YOLOTuner
@@ -43,25 +41,16 @@ def run_tuning(args, config: Dict):
     print("Starting Hyperparameter Tuning")
     print("="*80)
 
-    max_concurrent = config['ray_tune']['max_concurrent_trials']
-    available_gpus = torch.cuda.device_count()
-    available_cpus = os.cpu_count()
-
-    gpus_per_trial = available_gpus / max_concurrent if available_gpus > 0 else 0
-    cpus_per_trial = max(1, available_cpus // max_concurrent)
-
     tuner = YOLOTuner(
         num_samples=config['ray_tune']['num_samples'],
-        max_concurrent_trials=max_concurrent,
-        cpus_per_trial=cpus_per_trial,
-        gpus_per_trial=gpus_per_trial,
+        max_concurrent_trials=config['ray_tune']['max_concurrent_trials'],
         yolo_data_dir=str(Path(config['data']['training_dir'])),
         training_steps=config['training_steps'],
         points_to_evaluate=config['training_params'],
         tuning_space=config['tuning_space'],
-        plot_mode=args.plot_mode,
         conf_threshold=config['inference']['conf_threshold'],
-        iou_threshold=config['inference']['iou_threshold']
+        iou_threshold=config['inference']['iou_threshold'],
+        plot_mode=args.plot_mode
     )
 
     tuner.run()
@@ -80,9 +69,6 @@ def run_inference(args, config: Dict):
 
     inference = YOLOInference(
         model_path=config['inference']['model_path'], 
-        image_selections=config['data']['default_image_selections'],
-        tile_size=config['inference']['tile_size'],
-        overlap=config['inference']['overlap'],
         conf_threshold=config['inference']['conf_threshold'],
         iou_threshold=config['inference']['iou_threshold'],
         plot_mode=args.plot_mode
