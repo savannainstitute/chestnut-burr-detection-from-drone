@@ -188,17 +188,20 @@ Detect and count burrs for each tree using YOLO object detection models. Support
 - **Sample Input Data (Tuning, Training):**
     - Training images/labels: `burr_detection/sample_data/training/inputs/images/`, `burr_detection/sample_data/training/inputs/labels/`
 - **Sample Input Data (Inference):**
-    - Canopy selections: `image_selection/sample_data/outputs/best_image_selections.json`
+    - Image selections: `image_selection/sample_data/outputs/best_image_selections.json`
 - **Outputs (Training):**
-    - Best model: `burr_detection/sample_data/training/outputs/training_<timestamp>/best_training_weights.pt`
-    - Training history: `burr_detection/sample_data/training/outputs/training_<timestamp>/train_step*/`
+    - Best model: `burr_detection/sample_data/training/outputs/training_<timestamp>/best_model_weights.pt`
+    - YOLO training outputs: `burr_detection/sample_data/training/outputs/training_<timestamp>/train_step*/`
     - Test results: `burr_detection/sample_data/training/outputs/training_<timestamp>/test_results.csv`
-    - Dataset config: `burr_detection/sample_data/training/outputs/training_<timestamp>/dataset.yaml`
+    - Training history: `burr_detection/sample_data/training/outputs/training_<timestamp>/training_metrics.csv`
+    - Prediction plots: `burr_detection/sample_data/training/outputs/training_<timestamp>/prediction_plots/`
 - **Outputs (Tuning):**
     - Best model: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/best_<model>_model.pt`
-    - Tuning history: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/tuning_history.csv`
-    - Best model training history: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/best_trial_training_history.csv`
-    - Dataset config: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/dataset.yaml`
+    - Tuning history: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/all_tuning_history.csv`
+    - Best trial config: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/best_trial_config.json`
+    - Best trial training history: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/best_trial_training_history.csv`
+    - Test results: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/test_results.csv`
+    - Prediction plots: `burr_detection/sample_data/training/outputs/tuning_<timestamp>/prediction_plots/`
 - **Outputs (Inference):**
     - Burr counts per tree: `burr_detection/sample_data/inference/outputs/inference_<timestamp>/tree_burr_detections.csv`
     - Detection summary: `burr_detection/sample_data/inference/outputs/inference_<timestamp>/detection_summary.txt`
@@ -212,7 +215,7 @@ Detect and count burrs for each tree using YOLO object detection models. Support
     conda activate burr-detection
     ```
 
-**Note:** If using a CUDA-enabled GPU (recommended), install PyTorch with CUDA from wheel before running:
+**Note:** If using a CUDA-enabled GPU (recommended), install PyTorch with CUDA from wheel before running burr detection:
     ```
     pip3 install -U torch torchvision --index-url https://download.pytorch.org/whl/cu130
     ```
