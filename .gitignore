@@ -4,3 +4,4 @@
 *.pyc
 /image_selection/sample_data
 *.pt
+.vscode/settings.json
