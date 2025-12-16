@@ -498,11 +498,9 @@ def plot_ground_truth_vs_predictions(predictions, labels_dir, original_images_di
             ax1.set_title('Ground Truth', fontsize=16, weight='bold')
 
             label_file = labels_dir / f"{img_path.stem}.txt"
-            print(f"Looking for label file: {label_file} (exists: {label_file.exists()})")
             if label_file.exists():
                 try:
                     gt_data = np.loadtxt(label_file, ndmin=2)
-                    print(f"Loaded label data for {label_file}: shape {gt_data.shape}")
                     if gt_data.ndim == 1:
                         gt_data = gt_data[None, :]
                     if gt_data.shape[0] > 0:
