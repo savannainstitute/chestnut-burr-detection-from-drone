@@ -34,7 +34,7 @@ Sample data for a chestnut orchard is available via Google Drive as a ZIP file.
 
 **Instructions:**
 1. Download the sample data ZIP from Google Drive:  
-   [Download sample data (Google Drive)](https://drive.google.com/file/d/1oHYCEbzDCp7JmoOPDLNqplWT2zbMd--1/view?usp=sharing)
+   [Download sample data (Google Drive)](https://drive.google.com/file/d/13qJbHO3ZU8EeesVM2tbPHkUUXSIAS_aN/view?usp=sharing)
 2. Extract the ZIP file **into the root of this repository** (the folder containing this README). Overwrite any existing folders if prompted.
 3. The sample data will be placed in the correct subdirectories automatically.
 
@@ -152,7 +152,7 @@ Select the best drone image for each segmented canopy using image quality and se
     - Metashape project: `flight_reconstruction/sample_data/20230823_Orchard4/outputs/project_20230823_Orchard4.psx`  
     - Raw images: `flight_reconstruction/sample_data/20230823_Orchard4/`
 - **Outputs:**  
-    - Best canopy selections: `image_selection/sample_data/outputs/best_canopy_selections.json`
+    - Best image selections: `image_selection/sample_data/outputs/best_image_selections.json`
 
 **Usage (PowerShell):**
 1. Activate the conda environment:
@@ -222,43 +222,31 @@ Detect and count burrs for each tree using YOLO object detection models. Support
 2. Train a YOLO model using multi-step progressive training:
     ```
     python -m burr_detection.detection --mode train `
-        --config "burr_detection/config.yml"
+        --config "burr_detection/config.yml" `
+        --plot-mode subset
     ```
-
-**Arguments:**
-- `--config` (optional): Path to configuration file (default: `burr_detection/config.yml`)
 
 ### 4b. Tuning Mode
 
 2. Optimize hyperparameters using Ray Tune with Optuna search:
     ```
     python -m burr_detection.detection --mode tune `
-        --num-samples 50 `
-        --config "burr_detection/config.yml"
+        --config "burr_detection/config.yml" `
+        --plot-mode subset
     ```
-
-**Arguments:**
-- `--num-samples` (required): Number of hyperparameter combinations to try
-- `--config` (optional): Path to configuration file (default: `burr_detection/config.yml`)
 
 ### 4c. Inference Mode
 
 2. Detect burrs on unlabeled drone imagery:
     ```
     python -m burr_detection.detection --mode inference `
-        --image-selections "image_selection/sample_data/outputs/best_image_selections.json" `
-        --output "burr_detection/sample_data/inference/outputs" `
-        --conf-threshold 0.5 `
-        --iou-threshold 0.45 `
+        --config "burr_detection/config.yml" `
         --plot-mode subset
     ```
 
 **Arguments:**
-- `--image-selections` (required): JSON file with tree canopy polygons (from Step 3)
-- `--output` (required): Directory for detection results
-- `--model` (optional): Path to trained YOLO model (.pt file). If not specified, uses best model from last tuning run.
-- `--conf-threshold` (optional): Minimum detection confidence (default: 0.5)
-- `--iou-threshold` (optional): NMS IoU threshold for duplicate removal (default: 0.45)
+- `--mode` (optional): `tune`, `train`, or `inference` (default: inference)
+- `--config` (optional): `/path/to/config/yml` (default: burr_detection/config.yml)
 - `--plot-mode` (optional): `all`, `subset` (15 random), or `none` (default: subset)
 
 **Image Selections JSON Format:**
