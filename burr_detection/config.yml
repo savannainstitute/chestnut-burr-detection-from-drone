@@ -82,4 +82,3 @@ inference:
 data:
   training_dir: burr_detection/sample_data/training/inputs
   image_selections: image_selection/sample_data/outputs/best_image_selections.json
-  output_dir: burr_detection/sample_data/inference/outputs
