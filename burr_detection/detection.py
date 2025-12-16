@@ -85,7 +85,6 @@ def run_inference(args, config: Dict):
         overlap=config['inference']['overlap'],
         conf_threshold=config['inference']['conf_threshold'],
         iou_threshold=config['inference']['iou_threshold'],
-        output_dir=config['data']['output_dir'],
         plot_mode=args.plot_mode
     )
     inference.run()
