@@ -3,20 +3,20 @@
 training_steps:
   - batch: 8
     accumulate: 1
-    max_epochs: 5
-    patience: 2
+    max_epochs: 50
+    patience: 10
   - batch: 8
     accumulate: 4
-    max_epochs: 4
-    patience: 1
+    max_epochs: 50
+    patience: 15
   - batch: 8
     accumulate: 16
-    max_epochs: 2
-    patience: 1
+    max_epochs: 50
+    patience: 20
   - batch: 8
     accumulate: 64
-    max_epochs: 2
-    patience: 1
+    max_epochs: 50
+    patience: 25
   
 training_params: # or starting point for tuning 
   - model_size: yolov8s.pt
@@ -71,7 +71,7 @@ tuning_space:
   dropout: {"uniform": [0.0, 0.2]}
 
 ray_tune:
-  num_samples: 2
+  num_samples: 50
   max_concurrent_trials: 2
 
 inference:
