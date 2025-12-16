@@ -183,7 +183,7 @@ Select the best drone image for each segmented canopy using image quality and se
 Detect and count burrs for each tree using YOLO object detection models. Supports training, hyperparameter tuning, and inference on new drone imagery.
 
 - **Main Sctipt:** `burr_detection/detection.py` 
-- **Supplemental scripts:** `burr_detection/training.py`, `burr_detection/tuning.py`, `burr_detection/dataset.py`, `burr_detection/utils.py`
+- **Supplemental scripts:** `burr_detection/training.py`, `burr_detection/tuning.py`, `burr_detection/inference.py`, `burr_detection/dataset.py`, `burr_detection/utils.py`
 - **Config:** `burr_detection/config.yml`
 - **Sample Input Data (Tuning, Training):**
     - Training images/labels: `burr_detection/sample_data/training/inputs/images/`, `burr_detection/sample_data/training/inputs/labels/`
