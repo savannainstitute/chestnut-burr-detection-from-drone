@@ -36,7 +36,7 @@ Sample data for a chestnut orchard is available via Google Drive as a ZIP file.
 1. Download the sample data ZIP (~42Gb) from Google Drive:  
    [Download sample data (Google Drive)](https://drive.google.com/file/d/13qJbHO3ZU8EeesVM2tbPHkUUXSIAS_aN/view?usp=sharing)
 2. Extract the ZIP file **into the root of this repository** (the folder containing this README). Overwrite any existing folders if prompted.
-3. The sample data will be placed in the correct subdirectories automatically.
+3. The sample data *should* be placed in the correct subdirectories automatically.
 
 ---
 
