@@ -116,7 +116,7 @@ def run_detection():
         epilog="""
 Examples:
   # Hyperparameter tuning
-  python -m burr_detection.detection --mode tune --num-samples 50 --plot-mode none
+  python -m burr_detection.detection --mode tune --plot-mode none
   
   # Training with best known hparams
   python -m burr_detection.detection --mode train `
@@ -155,10 +155,8 @@ Examples:
 
     args = parser.parse_args()
     
-    # Load configuration
     config = load_config(args.config)
     
-    # Route to appropriate function
     if args.mode == 'tune':
         run_tuning(args, config)
     elif args.mode == 'train':
