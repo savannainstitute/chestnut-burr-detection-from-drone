@@ -7,21 +7,21 @@ from PIL import Image
 import random
 from ultralytics import YOLO
 
-from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms
+from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms, get_output_dir
 from burr_detection.dataset import CanopyTiler
 
 class YOLOInference:
-    def __init__(self, model_path, image_selections, tile_size, overlap, conf_threshold, iou_threshold, plot_mode='none'):
+    def __init__(self, model_path, conf_threshold, iou_threshold, plot_mode='none'):
         self.model_path = self._get_model_path(model_path)
         print(f"\nLoading model: {self.model_path}")
         self.model = YOLO(self.model_path)
-        self.selections = self._load_selections(image_selections)
-        self.tiler = CanopyTiler(tile_size=tile_size, overlap=overlap)
+        self.selections = self._load_selections("image_selection/sample_data/outputs/best_image_selections.json")
+        self.tiler = CanopyTiler(tile_size=224, overlap=0.2)
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
         self.plot_mode = plot_mode
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = Path("burr_detection/sample_data/inference/outputs") / f"inference_{self.timestamp}"
+        self.output_dir = get_output_dir("burr_detection/sample_data/inference/outputs", "inference", self.timestamp)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.preprocessed_trees_dir = self.output_dir / 'preprocessed_trees'
         self.preprocessed_trees_dir.mkdir(exist_ok=True)
