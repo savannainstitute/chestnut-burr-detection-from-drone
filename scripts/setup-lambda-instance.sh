@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# FIXME: sh flag to fail on error
+
+SI_ROOT=/home/${USER}/si
+
+# first copy over ssh key. Right way to do this in a script?? Or put in the persistent disk and then copy to local disk. hm.
+
+cd $SI_ROOT
+
+if [ ! -d "${SI_ROOT}/rcfiles" ]; then
+    # FIXME need a branch for this environment, or clean up rcfiles.
+    git clone git@github.com:adamberenzweig/rcfiles.git 
+fi
+cd ${SI_ROOT}/rcfiles; make copy
+
+if command -v conda >/dev/null 2>&1; then
+    echo conda already installed
+else
+    curl -O https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh 
+    # -b batch mode auto-accepts the license.
+    sh Miniconda3-latest-Linux-x86_64.sh -b
+    $HOME/miniconda3/bin/conda init bash
+    # Reload to bring in conda.
+    . $HOME/.bashrc
+fi
+
+if [ ! -d "${SI_ROOT}/chestnut-burr-detection-from-drone" ]; then
+    git clone git@github.com:savannainstitute/chestnut-burr-detection-from-drone.git 
+fi
+
+
+if [[ -z $(conda env list | grep burr-detection) ]]; then
+    # Use -y to auto-accept license prompts.
+    cd $SI_ROOT/chestnut-burr-detection-from-drone; conda env create -f burr-detection.yml -y
+
+    conda run -n burr-detection pip install ipykernel
+    conda run -n burr-detection python -m ipykernel install --user --name burr-detection --display-name burr-detection
+fi
+
+if [ ! -d "${SI_ROOT}/data/sample_data" ]; then
+    mkdir -p $SI_ROOT/data; cd $SI_ROOT/data
+    wget "https://drive.usercontent.google.com/download?id=1eUWmgBevc6CP5g-XBN4AgOzowgSOUxj3&export=download&confirm=t" -O sample_data.zip && unzip sample_data.zip
+fi
