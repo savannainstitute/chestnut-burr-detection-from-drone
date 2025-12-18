@@ -32,6 +32,8 @@ fi
 
 if [[ -z $(conda env list | grep burr-detection) ]]; then
     # Use -y to auto-accept license prompts.
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+    conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
     cd $SI_ROOT/chestnut-burr-detection-from-drone; conda env create -f burr-detection.yml -y
 
     conda run -n burr-detection pip install ipykernel
