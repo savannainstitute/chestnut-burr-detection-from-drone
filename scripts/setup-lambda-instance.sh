@@ -1,15 +1,18 @@
 #!/bin/bash
 
-# FIXME: sh flag to fail on error
-
 SI_ROOT=/home/${USER}/si
 
-# first copy over ssh key. Right way to do this in a script?? Or put in the persistent disk and then copy to local disk. hm.
+if [ ! -e "/home/${USER}/.ssh/id_ed25519" ]; then
+    mkdir -p /home/${USER}/.ssh
+    cp ${SI_ROOT}/keys/id_ed25519 /home/${USER}/.ssh/
+    chmod 600 /home/${USER}/.ssh/id_ed25519
+    cp ${SI_ROOT}/keys/id_ed25519.pub /home/${USER}/.ssh/
+fi
 
 cd $SI_ROOT
 
 if [ ! -d "${SI_ROOT}/rcfiles" ]; then
-    # FIXME need a branch for this environment, or clean up rcfiles.
+    # TODO(madadam): Separate branch for this environment, or clean up rcfiles.
     git clone git@github.com:adamberenzweig/rcfiles.git 
 fi
 cd ${SI_ROOT}/rcfiles; make copy
