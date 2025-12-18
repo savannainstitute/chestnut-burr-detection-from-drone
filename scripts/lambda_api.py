@@ -1,6 +1,8 @@
+import json
 import os
 import click
 import requests
+import time
 import yaml
 
 
@@ -76,10 +78,25 @@ def cli():
 @cli.command(
     help="Launch an instance. Takes one argument, the filename of the instance config as yaml.")
 @click.argument("config")
-def launch_instance(config):
+@click.option("--retry_seconds", "-r", default=0)
+def launch_instance(config, retry_seconds):
   api = LambdaAPI()
-  response = api.create_instance(config)
-  print(response.text)
+
+  def _try_launch():
+    response = api.create_instance(config).json()
+    if ("error" in response and 
+        response["error"].get("code") == "instance-operations/launch/insufficient-capacity"):
+      return (False, response)
+    return (True, response)
+
+  success = False
+  while not success:
+    success, response = _try_launch()
+    print(success, response) # FIXME
+    if not success:
+      print(f"No capacity. Retrying in {retry_seconds} seconds")
+      time.sleep(retry_seconds)
+  print(response)
 
 
 @cli.command()
@@ -91,10 +108,22 @@ def list_instances():
 
 @cli.command()
 @click.argument("region", default="us-east-1")
-def list_instance_types(region):
+@click.option("-v", "--verbose", is_flag=True)
+def list_instance_types(region, verbose):
   api = LambdaAPI()
   response = api.list_instance_types(region)
-  print(response["data"].keys())
+  instance_types = sorted(
+    [v["instance_type"] for v in response["data"].values()],
+    key=lambda x: x["price_cents_per_hour"]
+  )
+  if verbose:
+    print(json.dumps(instance_types, indent=2))
+  else:
+    info_strs = [
+      f"{info['name']} (${info['price_cents_per_hour']/100})"
+      for info in instance_types
+    ]
+    print("\n".join(info_strs))
 
 
 @cli.command()
