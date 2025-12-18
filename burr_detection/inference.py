@@ -7,21 +7,22 @@ from PIL import Image
 import random
 from ultralytics import YOLO
 
-from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms
+from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms, get_output_dir
 from burr_detection.dataset import CanopyTiler
 
 class YOLOInference:
-    def __init__(self, model_path, image_selections, tile_size, overlap, conf_threshold, iou_threshold, plot_mode='none'):
+    def __init__(self, model_path, image_selections_path, conf_threshold, iou_threshold, plot_mode='subset'):
         self.model_path = self._get_model_path(model_path)
         print(f"\nLoading model: {self.model_path}")
         self.model = YOLO(self.model_path)
-        self.selections = self._load_selections(image_selections)
-        self.tiler = CanopyTiler(tile_size=tile_size, overlap=overlap)
+        self.image_selection_path = Path(image_selections_path)
+        self.selections = self._load_selections(self.image_selection_path)
+        self.tiler = CanopyTiler(tile_size=224, overlap=0.2)
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
         self.plot_mode = plot_mode
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = Path("burr_detection/sample_data/inference/outputs") / f"inference_{self.timestamp}"
+        self.output_dir = get_output_dir("burr_detection/sample_data/inference/outputs", "inference", self.timestamp)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.preprocessed_trees_dir = self.output_dir / 'preprocessed_trees'
         self.preprocessed_trees_dir.mkdir(exist_ok=True)
@@ -137,3 +138,33 @@ class YOLOInference:
                 save_dir=plot_dir,
                 conf_threshold=self.conf_threshold
             )
+
+        processed_trees = len(self.results_data)
+        total_burrs = int(self.results_df['total_detections'].sum()) if processed_trees > 0 else 0
+        avg_burrs_per_tree = float(self.results_df['total_detections'].mean()) if processed_trees > 0 else 0.0
+        min_burrs = int(self.results_df['total_detections'].min()) if processed_trees > 0 else 0
+        max_burrs = int(self.results_df['total_detections'].max()) if processed_trees > 0 else 0
+        avg_confidence = float(self.results_df['avg_confidence'].mean()) if processed_trees > 0 else 0.0
+
+        summary_text = f"""
+        Burr Detection Summary
+        {'='*50}
+        Processed Trees: {processed_trees}
+        Total Burrs Detected: {total_burrs}
+        Average Burrs per Tree: {avg_burrs_per_tree}
+        Min Burrs: {min_burrs}
+        Max Burrs: {max_burrs}
+        Overall Average Confidence: {avg_confidence:.3f}
+
+        Model: {self.model_path.name}
+        Confidence Threshold: {self.conf_threshold}
+        IoU Threshold: {self.iou_threshold}
+
+        Results saved to: {self.csv_path}
+        Plots saved to: {self.output_dir / 'prediction_plots'}
+        {'='*50}
+        """
+        summary_path = self.output_dir / 'detection_summary.txt'
+        with open(summary_path, 'w') as f:
+            f.write(summary_text)
+        print(summary_text)
