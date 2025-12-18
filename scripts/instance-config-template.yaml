@@ -1,0 +1,12 @@
+name: si-lab
+instance_type_name: gpu_1x_a10
+file_system_mounts:
+- file_system_id: "1970051562e642f4ae164b87aac955c6"
+  mount_point: /home/ubuntu/si
+region_name: us-east-1
+ssh_key_names:
+- madadam-macbook
+user_data: |
+  #cloud-config
+  runcmd:
+  -  bash /home/ubuntu/si/chestnut-burr-detection-from-drone/scripts/setup-lambda-instance.sh
