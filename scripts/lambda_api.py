@@ -73,7 +73,8 @@ def cli():
   pass
 
 
-@cli.command()
+@cli.command(
+    help="Launch an instance. Takes one argument, the filename of the instance config as yaml.")
 @click.argument("config")
 def launch_instance(config):
   api = LambdaAPI()
