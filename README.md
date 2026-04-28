@@ -554,9 +554,8 @@ data:
 
 - **Platform:** Windows-only due to the Agisoft Metashape Python API (Steps 1 and 3)
 - **Drone hardware:** Optimized for DJI Mavic 3M; RTK accuracy parsing and gimbal pitch metadata both depend on DJI-specific XMP tags
-- **Labels not included:** No labeled training dataset is distributed with this repository; users must provide their own YOLO-format annotations to train or tune the detector
 - **Single class:** The detector is configured for one object class (burr); multi-class use requires label and config changes
-- **Canopy segmentation:** One-to-one mapping between markers and canopies; touching or overlapping crowns are not automatically split without separate markers per crown
+- **Canopy segmentation:** One-to-one mapping between markers and canopies; touching or overlapping crowns are not automatically split without separate markers per crown and, as such, outputs usually require manual cleanup. ## TODO: instance segmentation from point cloud
 - **Image selection:** Does not account for occlusion of a canopy by adjacent trees or branches
 - **Inference tiling:** Tile size (224×224) and overlap (20%) are fixed and require source edits to change
 - **Metashape license:** Agisoft Metashape Professional is required for Steps 1 and 3; the included wheel is version 2.2.2
