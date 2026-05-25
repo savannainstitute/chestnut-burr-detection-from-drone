@@ -432,7 +432,7 @@ python -m burr_detection.detection --mode train `
 | `train_step{1-4}/` | Per-step YOLO run directories (weights, results.csv, plots) |
 | `prediction_plots/` | Side-by-side ground truth vs. prediction visualizations |
 
-**Sample test results** from included sample run:
+**Sample test results** from included sample run on sample dataset:
 
 | Precision | Recall | F1 | mAP50 | Inference (ms/img) |
 |-----------|--------|----|-------|-------------------|
