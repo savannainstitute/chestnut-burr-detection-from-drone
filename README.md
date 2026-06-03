@@ -432,11 +432,23 @@ python -m burr_detection.detection --mode train `
 | `train_step{1-4}/` | Per-step YOLO run directories (weights, results.csv, plots) |
 | `prediction_plots/` | Side-by-side ground truth vs. prediction visualizations |
 
-**Sample test results** from included sample run on sample dataset:
+**Performance**
 
-| Precision | Recall | F1 | mAP50 | Inference (ms/img) |
-|-----------|--------|----|-------|-------------------|
-| 0.735 | 0.628 | 0.677 | 0.701 | 3.74 |
+The detector is **YOLOv8s** (the `training_params` default; the tuning search may also select `yolo11n/s` or `yolov8n`).
+
+*Full dataset (production model)* — YOLOv8s on the held-out test split (174 images, 1,936 burrs), ~3.6 ms/img inference on an RTX 4060 Laptop GPU:
+
+| Precision | Recall | F1 | mAP50 | mAP50-95 |
+|-----------|--------|----|-------|----------|
+| 0.818 | 0.748 | 0.782 | 0.820 | 0.431 |
+
+*The full multi-orchard training set is proprietary and not distributed here.*
+
+*Included sample dataset* — the single-orchard sample is small, so test metrics vary noticeably run-to-run (mAP50 ≈ 0.70–0.80). A representative run:
+
+| Precision | Recall | F1 | mAP50 |
+|-----------|--------|----|-------|
+| 0.791 | 0.743 | 0.767 | 0.801 |
 
 **Key `training_params` in `config.yml`** (default / tuned starting point):
 
