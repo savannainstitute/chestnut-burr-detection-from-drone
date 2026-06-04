@@ -24,13 +24,16 @@ class TreeCanopySegmentation:
         4. Save results as shapefiles (canopy polygons and refined tree tops)
     """
 
-    def __init__(self, chm_path, min_height):
+    def __init__(self, chm_path, min_height, min_area_m2=5.0, min_hole_area_m2=1.25):
         """
         Initialize segmentation parameters and state.
 
         Args:
             chm_path (str): Path to input CHM raster file.
             min_height (float): Minimum CHM height (meters) for segmentation mask.
+            min_area_m2 (float): Minimum canopy area (m^2); smaller segments are removed.
+            min_hole_area_m2 (float): Holes within a segment smaller than this (m^2)
+                are filled. Independent of min_area_m2.
 
         Returns:
             None
@@ -40,6 +43,8 @@ class TreeCanopySegmentation:
         self.watershed_compactness = 1e-4       # higher for more regular shapes
         self.height_factor_scale = 0.2          # higher places boundaries further out for taller trees
         self.min_height = min_height            # minimum height in meters for segmentation mask
+        self.min_area_m2 = min_area_m2          # minimum canopy area in m^2; smaller segments removed
+        self.min_hole_area_m2 = min_hole_area_m2  # holes smaller than this (m^2) are filled; decoupled from min_area
         self.surface_smooth_sigma = 0.1         # higher for smoother segmentation surface
 
         self.chm_path = chm_path
@@ -334,8 +339,9 @@ class TreeCanopySegmentation:
         )
 
         n_segments_before = len(np.unique(self.segments)) - 1
-        min_area_m2 = 5.0
+        min_area_m2 = self.min_area_m2
         min_size_pixels = int(min_area_m2 / (self.resolution_m_per_pixel ** 2))
+        hole_size_pixels = int(self.min_hole_area_m2 / (self.resolution_m_per_pixel ** 2))
 
         cleaned_segments = np.zeros_like(self.segments)
         for segment_id in np.unique(self.segments):
@@ -343,7 +349,7 @@ class TreeCanopySegmentation:
                 continue
             segment_mask = (self.segments == segment_id)
             cleaned_mask = remove_small_objects(segment_mask, min_size=min_size_pixels)
-            cleaned_mask = remove_small_holes(cleaned_mask, area_threshold=min_size_pixels//4)
+            cleaned_mask = remove_small_holes(cleaned_mask, area_threshold=hole_size_pixels)
             cleaned_segments[cleaned_mask] = segment_id
 
         self.segments = cleaned_segments
@@ -539,8 +545,10 @@ def run_segmentation():
     parser = argparse.ArgumentParser(description="Proximity-based canopy segmentation")
     parser.add_argument("--chm", required=True, help="Path to CHM TIFF")
     parser.add_argument("--tree-markers", "-t", required=True, help="Point shapefile of tree markers")
-    parser.add_argument("--min-height", type=float, default=1.75, help="Minimum CHM height (meters) for segmentation mask (default: 1.75)")
-    parser.add_argument("--buffer-size", type=float, default=1.0, help="Buffer size in meters for tree marker refinement (default: 1.0)")
+    parser.add_argument("--min-height", type=float, default=1.0, help="Minimum CHM height (meters) for segmentation mask (default: 1.0)")
+    parser.add_argument("--buffer-size", type=float, default=0.5, help="Buffer size in meters for tree marker refinement (default: 0.5)")
+    parser.add_argument("--min-area", type=float, default=5.0, help="Minimum canopy area in m^2; smaller segments are removed (default: 5.0)")
+    parser.add_argument("--min-hole-area", type=float, default=1.25, help="Holes within a segment smaller than this (m^2) are filled; independent of --min-area (default: 1.25)")
     parser.add_argument("--extent", "-e", required=False, help="Polygon shapefile defining processing extent (optional)")
     parser.add_argument("--outdir", required=True, help="Output directory")
     parser.add_argument("--id-column", type=str, default=None, help="Column name for original tree IDs in marker shapefile (optional)")
@@ -559,7 +567,7 @@ def run_segmentation():
     prefix = prefix_from_chm(args.chm)
     outdir = args.outdir
 
-    seg = TreeCanopySegmentation(args.chm, min_height=args.min_height)
+    seg = TreeCanopySegmentation(args.chm, min_height=args.min_height, min_area_m2=args.min_area, min_hole_area_m2=args.min_hole_area)
 
     if not seg.load_chm(extent_shapefile=args.extent):
         return 1
