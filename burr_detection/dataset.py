@@ -5,6 +5,7 @@ Handles dataset preparation, image tiling, and aggregating tree-level detections
 import numpy as np
 import random
 import re
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageOps
@@ -492,8 +493,12 @@ def create_tiled_dataset(images_dir, labels_dir, output_dir, canopy_dir=None,
 
     out_images = output_dir / "images"
     out_labels = output_dir / "labels"
-    out_images.mkdir(parents=True, exist_ok=True)
-    out_labels.mkdir(parents=True, exist_ok=True)
+    # Clear any previous run so re-tiling is idempotent -- stale tiles must not survive
+    # (e.g. when a denylist now excludes tiles a prior run kept).
+    for d in (out_images, out_labels):
+        if d.exists():
+            shutil.rmtree(d)
+        d.mkdir(parents=True, exist_ok=True)
 
     stats = defaultdict(int)
     image_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")))
