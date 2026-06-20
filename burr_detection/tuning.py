@@ -243,7 +243,7 @@ class YOLOTuner:
             "val_precision", "val_recall", "val_f1", "val_mAP50", "val_fitness"
         ]
         parameter_columns = [
-            "model_size", "imgsz", "optimizer", "lr0", "lrf", "momentum", "weight_decay",
+            "model_size", "optimizer", "lr0", "lrf", "momentum", "weight_decay",
             "warmup_epochs", "warmup_bias_lr", "warmup_momentum",
             "box_gain", "cls_gain", "dfl_gain",
             "hsv_h", "hsv_s", "hsv_v",
