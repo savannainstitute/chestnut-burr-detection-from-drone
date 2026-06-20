@@ -23,7 +23,8 @@ from ultralytics import YOLO
 from burr_detection.training import YOLOTrainer
 from burr_detection.utils import (set_seed, is_notebook, convert_tuning_space, get_output_dir,
                                   evaluate_test_set, plot_ground_truth_vs_predictions,
-                                  compute_composite_objective, analyze_ray_results)
+                                  compute_composite_objective, analyze_ray_results,
+                                  install_resilient_write_bytes)
 
 class YOLOTuner:
     def __init__(
@@ -77,6 +78,7 @@ class YOLOTuner:
         os.environ['TUNE_DISABLE_STRICT_METRIC_CHECKING'] = '1'
         os.chdir(str(Path(__file__).parent.parent)) # handle relative paths
         set_seed(666)
+        install_resilient_write_bytes()  # ride out transient Windows file-locks on weight writes
 
         checkpoint = tune.get_checkpoint()
         start_step = 0
