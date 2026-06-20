@@ -68,7 +68,7 @@ analysis:
 
 tuning_space:
   model_size: ["yolo11n.pt", "yolo11s.pt", "yolov8n.pt", "yolov8s.pt"]
-  imgsz: [224, 320, 416]
+  imgsz: [224]
   optimizer: ["AdamW", "SGD", "Adam"]
   lr0: {"loguniform": [0.0005, 0.01]}
   lrf: {"loguniform": [0.001, 0.1]} # fraction of initial lr (decays towards lrf*lr0)
