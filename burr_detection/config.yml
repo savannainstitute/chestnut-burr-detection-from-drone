@@ -44,6 +44,28 @@ training_params: # or starting point for tuning
     copy_paste: 0.06990794938558989
     dropout: 0.1127393987394648
 
+# Composite objective for tuning + best-model selection.
+# Optimizes a gain-invariant blend instead of raw val_loss (which is confounded
+# by also tuning the box/cls/dfl loss gains).
+score_weights:
+  loss: 0.45
+  f1: 0.35
+  map50: 0.20
+
+# Progressive-step LR scaling:
+#   scaled_lr = min( min(lr0, max_lr0) * (eff_batch / ref)^power , max_scaled_lr )
+# Defaults below suit the current SGD config (lr0 ~ 0.0075, search max 0.01).
+# For AdamW use lower caps (e.g. max_lr0=0.003, max_scaled_lr=0.005).
+lr_reference_effective_batch: 64
+lr_scale_power: 0.5
+max_lr0: 0.01
+max_scaled_lr: 0.03
+
+# Tuning-results analysis plots written at the end of a tuning run.
+analysis:
+  enabled: true
+  top_n: 10
+
 tuning_space:
   model_size: ["yolo11n.pt", "yolo11s.pt", "yolov8n.pt", "yolov8s.pt"]
   imgsz: [224, 320, 416]
@@ -77,8 +99,34 @@ ray_tune:
 inference:
   model_path: null # specify path to model .pt, or use most-recent from training/tuning
   conf_threshold: 0.5
-  iou_threshold: 0.45
+  iou_threshold: 0.45       # per-tile NMS during predict()
+  global_nms_iou: 0.3       # light cross-tile NMS after core-region filtering
+  tile_batch_size: 96       # tiles per batched predict() call
 
 data:
-  training_dir: burr_detection/sample_data/training/inputs
+  # Sample-data defaults (download burr_detection/sample_data from Google Drive; the
+  # full_canopy/ set below ships there). Point at your own dataset with
+  # `--data-root <dir>`, which overrides these paths at runtime.
+  training_dir: burr_detection/sample_data/training/tiled        # written by --mode preprocess
+  outputs_dir: burr_detection/sample_data/training/outputs
   image_selections: image_selection/sample_data/outputs/best_image_selections.json
+  # Tiling source for --mode preprocess: canopy images + polygon burr labels + canopy masks.
+  full_res_images_dir: burr_detection/sample_data/training/full_canopy/images
+  polygon_labels_dir: burr_detection/sample_data/training/full_canopy/labels
+  canopy_labels_dir: burr_detection/sample_data/training/full_canopy/canopy
+  incorrect_tiles_denylist: burr_detection/sample_data/training/incorrect_tiles_denylist.txt
+  # Model for false-negative label augmentation (null = skip; set via --data-root or here).
+  audit_model: null
+  augment_conf: 0.4
+  tiling:
+    tile_size: 224          # match inference CanopyTiler
+    overlap: 0.2
+    min_canopy_frac: 0.15   # drop mostly-masked-out (background) tiles
+    bg_keep_ratio: 0.3      # fraction of burr-free canopy tiles kept as negatives
+    dedup_iou: 0.8          # drop burr boxes overlapping this much (double-annotations)
+
+# Train/val/test split. The group key function is supplied in code
+# (burr_tile_group_key); these control the fractions and seed.
+split:
+  fracs: [0.7, 0.2, 0.1]
+  seed: 666
