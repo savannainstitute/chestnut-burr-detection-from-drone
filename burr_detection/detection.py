@@ -10,18 +10,26 @@ from typing import Dict
 from burr_detection.training import YOLOTrainer
 from burr_detection.tuning import YOLOTuner
 from burr_detection.inference import YOLOInference
-from burr_detection.dataset import prepare_dataset_splits, burr_tile_group_key
 from burr_detection.utils import load_config, plot_dataset_samples, get_output_dir
         
 
-def run_training(args, config: Dict):
-    """Train model using best known hyperparameters from config"""
+def run_training(args, config: Dict, override_params=None):
+    """Train model using best known hyperparameters from config.
+
+    If override_params is given (e.g. the winning hyperparameters from a preceding
+    `tune` step in a chained run), they are used instead of config['training_params'][0].
+    """
     print("\n" + "="*80)
     print("Training with Best Known Hyperparameters")
     print("="*80)
 
+    params = override_params or config['training_params'][0]
+    if override_params:
+        print(f"Using tuned hyperparameters handed off from the tuning step "
+              f"(model_size={params.get('model_size')}).")
+
     trainer = YOLOTrainer(
-        model_size=config['training_params'][0]['model_size'],
+        model_size=params['model_size'],
         prints_per_epoch=5,
         training_steps=config['training_steps'],
         score_weights=config.get('score_weights')
@@ -29,13 +37,13 @@ def run_training(args, config: Dict):
 
     trainer.train(
         yolo_data_dir=str(Path(config['data']['training_dir'])),
-        config=config['training_params'][0],
+        config=params,
         plot_mode=args.plot_mode,
         conf_threshold=config['inference']['conf_threshold'],
         iou_threshold=config['inference']['iou_threshold'],
         outputs_dir=config['data'].get('outputs_dir')
     )
-    
+
     print(f"\nTraining complete! Results saved to: {trainer.output_dir}")
 
 
@@ -64,9 +72,16 @@ def run_tuning(args, config: Dict):
 
     if not tuner.best_trial:
         print("Tuning completed but no best trial found.")
-        return
+        return None
 
     print(f"\nTuning complete! Results saved to: {tuner.best_output_dir}")
+
+    # Return the best hyperparameters so a chained `train` step can use them.
+    best_cfg_path = Path(tuner.best_output_dir) / "best_trial_config.json"
+    if best_cfg_path.exists():
+        import json
+        return json.loads(best_cfg_path.read_text())
+    return None
 
 
 def run_inference(args, config: Dict):
@@ -90,13 +105,12 @@ def run_inference(args, config: Dict):
 
 
 def run_preprocess(args, config: Dict):
-    """Build the training set, then save QA + (advisory) FN-audit reports.
+    """Build the tiled training set from full-resolution canopy images + polygon labels.
 
-    If config.data.full_res_images_dir + polygon_labels_dir are set, runs the
-    in-module polygon tiler (canopy mask -> tile -> clip polygons to bboxes ->
-    denylist/quality filters -> group-aware split) to (re)generate training_dir.
-    Otherwise just (re)splits an existing tile set. Then saves QA sample overlays
-    and, if data.audit_model is set, an advisory FN-audit report (not applied).
+    Runs the in-module polygon tiler (canopy mask -> tile -> clip polygons to bboxes ->
+    denylist/quality filters -> group-aware split) to (re)generate training_dir, saves
+    QA sample overlays, and -- if data.audit_model is set -- augments the labels with the
+    model's high-confidence predictions to recover missed burrs across all splits.
     """
     from burr_detection.dataset import create_tiled_dataset
     from burr_detection.utils import augment_labels_with_model
@@ -108,38 +122,35 @@ def run_preprocess(args, config: Dict):
     data = config['data']
     training_dir = Path(data['training_dir'])
     split_cfg = config.get('split', {})
-    fracs = tuple(split_cfg.get('fracs', [0.7, 0.2, 0.1]))
     seed = split_cfg.get('seed', 666)
 
     src_images = data.get('full_res_images_dir')
     src_labels = data.get('polygon_labels_dir')
-    if src_images and src_labels:
-        tcfg = data.get('tiling', {}) or {}
-        denylist = None
-        deny_path = data.get('incorrect_tiles_denylist')
-        if deny_path and Path(deny_path).exists():
-            denylist = set(Path(deny_path).read_text().split())
-        print(f"Tiling full-resolution images from: {src_images}")
-        create_tiled_dataset(
-            images_dir=src_images,
-            labels_dir=src_labels,
-            output_dir=training_dir,
-            canopy_dir=data.get('canopy_labels_dir'),
-            denylist=denylist,
-            tile_size=tcfg.get('tile_size', 224),
-            overlap=tcfg.get('overlap', 0.2),
-            min_canopy_frac=tcfg.get('min_canopy_frac', 0.15),
-            bg_keep_ratio=tcfg.get('bg_keep_ratio', 0.3),
-            dedup_iou=tcfg.get('dedup_iou', 0.8),
-            seed=seed,
+    if not (src_images and src_labels):
+        raise SystemExit(
+            "preprocess needs data.full_res_images_dir + data.polygon_labels_dir "
+            "(canopy images + polygon burr labels). Set them in config.yml, or pass "
+            "--data-root <dir> with a full_canopy/{images,labels,canopy} layout."
         )
-    else:
-        prepare_dataset_splits(
-            images_dir=training_dir / 'images',
-            labels_dir=training_dir / 'labels',
-            output_dir=training_dir,
-            splits=fracs, seed=seed, group_key_fn=burr_tile_group_key,
-        )
+    tcfg = data.get('tiling', {}) or {}
+    denylist = None
+    deny_path = data.get('incorrect_tiles_denylist')
+    if deny_path and Path(deny_path).exists():
+        denylist = set(Path(deny_path).read_text().split())
+    print(f"Tiling full-resolution images from: {src_images}")
+    create_tiled_dataset(
+        images_dir=src_images,
+        labels_dir=src_labels,
+        output_dir=training_dir,
+        canopy_dir=data.get('canopy_labels_dir'),
+        denylist=denylist,
+        tile_size=tcfg.get('tile_size', 224),
+        overlap=tcfg.get('overlap', 0.2),
+        min_canopy_frac=tcfg.get('min_canopy_frac', 0.15),
+        bg_keep_ratio=tcfg.get('bg_keep_ratio', 0.3),
+        dedup_iou=tcfg.get('dedup_iou', 0.8),
+        seed=seed,
+    )
     print(f"\nDataset ready at: {training_dir}")
 
     out_base = data.get('outputs_dir') or str(training_dir.parent / "outputs")
@@ -203,29 +214,29 @@ def run_detection():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Preprocess: group-aware splits + QA sample plots (run before train/tune)
+  # Build the tiled training set from full_canopy/ images + polygon labels
   python -m burr_detection.detection --mode preprocess --plot-mode subset
 
   # Hyperparameter tuning
   python -m burr_detection.detection --mode tune --plot-mode none
-  
-  # Training with best known hparams
-  python -m burr_detection.detection --mode train `
-      --plot-mode subset
-  
-  
-  # Inference on unlabeled data
-  python -m burr_detection.detection --mode inference `
-      --plot-mode all
+
+  # Full pipeline in one command (tune hands its best hparams to train)
+  python -m burr_detection.detection --mode preprocess,tune,train,inference --plot-mode subset
+
+  # Point at your own dataset (overrides the sample paths)
+  python -m burr_detection.detection --mode preprocess,tune,train,inference `
+      --data-root "C:/path/to/your/dataset" --plot-mode subset
         """
     )
     
-    # Mode selection
+    # Mode selection (one mode, or a comma-separated sequence run in order)
     parser.add_argument(
         '--mode',
-        choices=['preprocess', 'tune', 'train', 'inference'],
         default='inference',
-        help='Operation mode: preprocess dataset (splits + QA samples), tune hyperparameters, train model, or run inference'
+        help='Operation mode, or a comma-separated sequence run in order, from: '
+             'preprocess, tune, train, inference. '
+             'Example: --mode preprocess,tune,train,inference (tune hands its best '
+             'hyperparameters to train).'
     )
     
     # Configuration
@@ -259,14 +270,22 @@ Examples:
     if args.data_root:
         _apply_data_root(config, args.data_root)
 
-    if args.mode == 'preprocess':
-        run_preprocess(args, config)
-    elif args.mode == 'tune':
-        run_tuning(args, config)
-    elif args.mode == 'train':
-        run_training(args, config)
-    else:  # inference
-        run_inference(args, config)
+    valid = ['preprocess', 'tune', 'train', 'inference']
+    modes = [m.strip() for m in args.mode.split(',') if m.strip()]
+    bad = [m for m in modes if m not in valid]
+    if bad:
+        parser.error(f"invalid --mode value(s) {bad}; choose from {valid} (single or comma-separated)")
+
+    tuned_params = None
+    for mode in modes:
+        if mode == 'preprocess':
+            run_preprocess(args, config)
+        elif mode == 'tune':
+            tuned_params = run_tuning(args, config)
+        elif mode == 'train':
+            run_training(args, config, override_params=tuned_params)
+        else:  # inference
+            run_inference(args, config)
 
 
 if __name__ == "__main__":
