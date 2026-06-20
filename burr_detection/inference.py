@@ -11,7 +11,10 @@ from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms, ge
 from burr_detection.dataset import CanopyTiler
 
 class YOLOInference:
-    def __init__(self, model_path, image_selections_path, conf_threshold, iou_threshold, plot_mode='subset'):
+    def __init__(self, model_path, image_selections_path, conf_threshold, iou_threshold,
+                 plot_mode='subset', global_nms_iou=0.3, tile_batch_size=96,
+                 outputs_dir="burr_detection/sample_data/training/outputs"):
+        self.outputs_dir = outputs_dir
         self.model_path = self._get_model_path(model_path)
         print(f"\nLoading model: {self.model_path}")
         self.model = YOLO(self.model_path)
@@ -20,6 +23,8 @@ class YOLOInference:
         self.tiler = CanopyTiler(tile_size=224, overlap=0.2)
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
+        self.global_nms_iou = global_nms_iou
+        self.tile_batch_size = tile_batch_size
         self.plot_mode = plot_mode
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_dir = get_output_dir("burr_detection/sample_data/inference/outputs", "inference", self.timestamp)
@@ -35,7 +40,7 @@ class YOLOInference:
         if model_path is not None:
             return Path(model_path)
         # Auto-detect latest model in outputs
-        outputs_dir = Path("burr_detection/sample_data/training/outputs")
+        outputs_dir = Path(self.outputs_dir)
         tuning_dirs = sorted(outputs_dir.glob("tuning_*"), reverse=True)
         training_dirs = sorted(outputs_dir.glob("training_*"), reverse=True)
         candidate_dirs = tuning_dirs + training_dirs
@@ -69,29 +74,31 @@ class YOLOInference:
             tiles, tile_info = self.tiler.tile_image(cropped_canopy)
             print(f"  {len(tiles)} tiles from cropped canopy")
             tile_detections = []
-            for tile in tiles:
-                tile_pil = Image.fromarray(tile)
-                pred = self.model.predict(
-                    tile_pil,
+            batch_size = max(1, int(self.tile_batch_size))
+            for start in range(0, len(tiles), batch_size):
+                batch_imgs = [Image.fromarray(t) for t in tiles[start:start + batch_size]]
+                preds = self.model.predict(
+                    batch_imgs,
                     conf=self.conf_threshold,
                     iou=self.iou_threshold,
                     verbose=False
-                )[0]
-                if pred.boxes is not None and len(pred.boxes) > 0:
-                    tile_detections.append({
-                        'boxes': pred.boxes.xyxy.cpu().numpy(),
-                        'confidences': pred.boxes.conf.cpu().numpy(),
-                        'labels': np.zeros(len(pred.boxes))
-                    })
-                else:
-                    tile_detections.append({
-                        'boxes': np.array([]),
-                        'confidences': np.array([]),
-                        'labels': np.array([])
-                    })
-            all_detections = self.tiler.reconstruct_detections(tile_detections, tile_info)
+                )
+                for pred in preds:
+                    if pred.boxes is not None and len(pred.boxes) > 0:
+                        tile_detections.append({
+                            'boxes': pred.boxes.xyxy.cpu().numpy(),
+                            'confidences': pred.boxes.conf.cpu().numpy(),
+                            'labels': np.zeros(len(pred.boxes))
+                        })
+                    else:
+                        tile_detections.append({
+                            'boxes': np.array([]),
+                            'confidences': np.array([]),
+                            'labels': np.array([])
+                        })
+            all_detections = self.tiler.reconstruct_detections_core(tile_detections, tile_info)
             raw_count = len(all_detections)
-            filtered_detections = apply_nms(all_detections, self.iou_threshold)
+            filtered_detections = apply_nms(all_detections, self.global_nms_iou)
             nms_count = len(filtered_detections)
             print(f"  Post-NMS detections: {nms_count} (removed {raw_count - nms_count} duplicates)")
             if nms_count > 0:
