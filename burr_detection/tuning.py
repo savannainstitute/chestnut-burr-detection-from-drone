@@ -183,16 +183,16 @@ class YOLOTuner:
             self._resume_training(
                 trainer, self.yolo_data_dir, config, start_step,
                 step_epochs_completed, total_epochs_so_far, yolo_checkpoint_path,
-                ray_tune_callback
+                ray_tune_callback, output_dir
             )
         else:
-            trainer.train(self.yolo_data_dir, config=config)
+            trainer.train(self.yolo_data_dir, config=config, output_dir=output_dir)
 
         return {}
 
     def _resume_training(self, trainer, yolo_data_dir, config, start_step,
                         step_epochs_completed, total_epochs_so_far, yolo_checkpoint_path,
-                        ray_tune_callback):
+                        ray_tune_callback, output_dir=None):
         """Resume training from checkpoint"""
         trainer.ray_tune_callback = ray_tune_callback
         trainer._original_stdout = sys.stdout
@@ -208,7 +208,7 @@ class YOLOTuner:
             '_resume_total_epochs': total_epochs_so_far
         }
 
-        return trainer.train(yolo_data_dir, config=resume_config)
+        return trainer.train(yolo_data_dir, config=resume_config, output_dir=output_dir)
 
     def run(self, run_name=None):
         """Run hyperparameter tuning with Ray Tune"""
@@ -216,6 +216,7 @@ class YOLOTuner:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         if run_name is None:
             run_name = f"YOLO_Optuna_{timestamp}"
+        Path(self.outputs_dir).mkdir(parents=True, exist_ok=True)  # Ray storage_path = run_<ts>/tune/
 
         param_space = convert_tuning_space(self.tuning_space)
 
@@ -237,18 +238,11 @@ class YOLOTuner:
         optuna_search = ConcurrencyLimiter(optuna_search, max_concurrent=self.max_concurrent_trials)
 
         metric_columns = [
-            "objective", "epoch", "step",
-            "train_loss", "train_box_loss", "train_cls_loss", "train_dfl_loss",
-            "val_loss", "val_box_loss", "val_cls_loss", "val_dfl_loss",
-            "val_precision", "val_recall", "val_f1", "val_mAP50", "val_fitness"
+            "step", "epoch", "val_loss",
+            "val_precision", "val_recall", "val_f1", "val_mAP50", "objective"
         ]
         parameter_columns = [
-            "model_size", "optimizer", "lr0", "lrf", "momentum", "weight_decay",
-            "warmup_epochs", "warmup_bias_lr", "warmup_momentum",
-            "box_gain", "cls_gain", "dfl_gain",
-            "hsv_h", "hsv_s", "hsv_v",
-            "degrees", "scale", "shear", "perspective",
-            "mosaic", "mixup", "copy_paste", "dropout"
+            "model_size", "optimizer", "lr0", "box_gain", "scale", "degrees", "flipud"
         ]
         if is_notebook():
             reporter = tune.JupyterNotebookReporter(
@@ -293,6 +287,7 @@ class YOLOTuner:
             run_config=tune.RunConfig(
                 name=run_name,
                 progress_reporter=reporter,
+                storage_path=str(Path(self.outputs_dir).resolve()),  # trials nest under run_<ts>/tune/
             ),
             param_space=param_space
         )
@@ -306,7 +301,7 @@ class YOLOTuner:
                 print(f"Tuning analysis skipped: {e}")
 
         try:
-            self.best_output_dir = get_output_dir(self.outputs_dir, "tuning", timestamp)
+            self.best_output_dir = Path(self.outputs_dir)
             self.best_output_dir.mkdir(parents=True, exist_ok=True)
             results_df = self.results.get_dataframe(filter_metric='objective', filter_mode='min')
             results_df.to_csv(self.best_output_dir / "all_tuning_history.csv", index=False)
