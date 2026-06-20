@@ -13,7 +13,7 @@ from burr_detection.dataset import CanopyTiler
 class YOLOInference:
     def __init__(self, model_path, image_selections_path, conf_threshold, iou_threshold,
                  plot_mode='subset', global_nms_iou=0.3, tile_batch_size=96, tile_size=224,
-                 overlap=0.2, outputs_dir="burr_detection/sample_data/training/outputs"):
+                 overlap=0.2, outputs_dir="burr_detection/sample_data/training/outputs", output_dir=None):
         self.outputs_dir = outputs_dir
         self.model_path = self._get_model_path(model_path)
         print(f"\nLoading model: {self.model_path}")
@@ -27,7 +27,8 @@ class YOLOInference:
         self.tile_batch_size = tile_batch_size
         self.plot_mode = plot_mode
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.output_dir = get_output_dir("burr_detection/sample_data/inference/outputs", "inference", self.timestamp)
+        self.output_dir = Path(output_dir) if output_dir is not None else \
+            get_output_dir("burr_detection/sample_data/inference/outputs", "inference", self.timestamp)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.preprocessed_trees_dir = self.output_dir / 'preprocessed_trees'
         self.preprocessed_trees_dir.mkdir(exist_ok=True)
@@ -39,19 +40,22 @@ class YOLOInference:
     def _get_model_path(self, model_path):
         if model_path is not None:
             return Path(model_path)
-        # Auto-detect latest model in outputs
-        outputs_dir = Path(self.outputs_dir)
-        tuning_dirs = sorted(outputs_dir.glob("tuning_*"), reverse=True)
-        training_dirs = sorted(outputs_dir.glob("training_*"), reverse=True)
-        candidate_dirs = tuning_dirs + training_dirs
-        if not candidate_dirs:
-            raise FileNotFoundError("No model outputs found. Please run training or tuning first.")
-        latest_dir = candidate_dirs[0]
-        model_files = list(latest_dir.glob("best_*.pt"))
-        if not model_files:
-            raise FileNotFoundError(f"No model file found in {latest_dir}")
-        print(f"Using model from latest run: {latest_dir.name}")
-        return model_files[0]
+        # Auto-detect the latest trained model under outputs/run_<ts>/{train,tune}/
+        # (newest run first, preferring the final train over the tuning best).
+        base = Path(self.outputs_dir)
+        candidate_dirs = []
+        for run in sorted(base.glob("run_*"), reverse=True):
+            candidate_dirs += [run / "train", run / "tune"]
+        candidate_dirs += sorted(base.glob("tuning_*"), reverse=True)      # legacy flat layout
+        candidate_dirs += sorted(base.glob("training_*"), reverse=True)
+        for d in candidate_dirs:
+            if d.is_dir():
+                model_files = sorted(d.glob("best_*.pt"))
+                if model_files:
+                    print(f"Using model: {model_files[0]}")
+                    return model_files[0]
+        raise FileNotFoundError(
+            f"No model found under {base} (looked in run_*/train, run_*/tune). Run training or tuning first.")
 
     def _load_selections(self, selections_path):
         selections_path = Path(selections_path)
