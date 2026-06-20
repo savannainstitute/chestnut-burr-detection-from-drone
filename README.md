@@ -393,7 +393,7 @@ full-resolution per-tree canopy images plus **polygon** (segmentation) burr labe
 
 1. Crops/masks each image to its canopy polygon and tiles it into 224×224 patches (20% overlap),
    clipping burr polygons to each tile and deriving bounding boxes; mostly-background tiles are dropped.
-2. Drops tiles listed in `incorrect_tiles_denylist.txt` and de-duplicates overlapping boxes.
+2. De-duplicates overlapping (double-annotated) boxes.
 3. Creates a **group-aware** train/val/test split (70/20/10) where all tiles cut from one source tree
    stay in the same split — preventing the tree-level leakage a plain per-tile shuffle would cause.
 4. Optionally **augments** labels with high-confidence predictions from a reference model
@@ -411,7 +411,6 @@ Expected dataset layout (produced by your annotation/export step; pass its root 
 │   ├── images/    # full-resolution per-tree canopy images
 │   ├── labels/    # YOLO-segment polygon burr labels (one .txt per image)
 │   └── canopy/    # YOLO-segment canopy polygon per image (used for masking)
-├── incorrect_tiles_denylist.txt    # optional: tile stems to exclude
 ├── reference/best_tuned_*.pt        # optional: model used for label augmentation
 └── tiled/                           # written by --mode preprocess (the training set)
 ```
