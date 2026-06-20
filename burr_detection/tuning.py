@@ -22,7 +22,8 @@ from ultralytics import YOLO
 
 from burr_detection.training import YOLOTrainer
 from burr_detection.utils import (set_seed, is_notebook, convert_tuning_space, get_output_dir,
-                                  evaluate_test_set, plot_ground_truth_vs_predictions)
+                                  evaluate_test_set, plot_ground_truth_vs_predictions,
+                                  compute_composite_objective, analyze_ray_results)
 
 class YOLOTuner:
     def __init__(
@@ -35,7 +36,11 @@ class YOLOTuner:
         tuning_space=None,
         conf_threshold=0.5,
         iou_threshold=0.45,
-        plot_mode='subset'
+        plot_mode='subset',
+        score_weights=None,
+        analysis_enabled=True,
+        analysis_top_n=10,
+        outputs_dir="burr_detection/sample_data/training/outputs"
     ):
         self.num_samples = num_samples
         self.max_concurrent_trials = max_concurrent_trials
@@ -46,6 +51,10 @@ class YOLOTuner:
         self.plot_mode = plot_mode
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
+        self.score_weights = score_weights or {"loss": 0.45, "f1": 0.35, "map50": 0.20}
+        self.analysis_enabled = analysis_enabled
+        self.analysis_top_n = analysis_top_n
+        self.outputs_dir = outputs_dir
 
         self.results = None
         self.best_trial = None
@@ -138,6 +147,23 @@ class YOLOTuner:
                     'val_dfl_loss': metrics['val_dfl_loss'] if 'val_dfl_loss' in metrics else 0.0
                 }
 
+                report_metrics['objective'] = compute_composite_objective(
+                    report_metrics['val_loss'],
+                    report_metrics['val_f1'],
+                    report_metrics['val_mAP50'],
+                    self.score_weights,
+                )
+
+                # Step-aware ASHA grace: during the first `step_patience` epochs
+                # after a freeze->unfreeze transition (steps > 1), hold reporting
+                # so ASHA can't prune a trial on the transition loss spike. Step 1
+                # is covered by ASHA's own grace_period, and always reporting it
+                # guarantees every trial has at least one objective row.
+                step_patience = int(metrics.get('step_patience', 0) or 0)
+                step_grace_active = current_step > 1 and step_epoch <= step_patience
+                if step_grace_active:
+                    return
+
                 try:
                     tune.report(
                         report_metrics,
@@ -204,14 +230,14 @@ class YOLOTuner:
         )
 
         optuna_search = OptunaSearch(
-            metric="val_loss",
+            metric="objective",
             mode="min",
             points_to_evaluate=self.points_to_evaluate,
         )
         optuna_search = ConcurrencyLimiter(optuna_search, max_concurrent=self.max_concurrent_trials)
 
         metric_columns = [
-            "epoch", "step",
+            "objective", "epoch", "step",
             "train_loss", "train_box_loss", "train_cls_loss", "train_dfl_loss",
             "val_loss", "val_box_loss", "val_cls_loss", "val_dfl_loss",
             "val_precision", "val_recall", "val_f1", "val_mAP50", "val_fitness"
@@ -258,7 +284,7 @@ class YOLOTuner:
             tune.with_resources(self.train_yolo_with_ray, resources=resources),
             tune_config=tune.TuneConfig(
                 mode="min",
-                metric="val_loss",
+                metric="objective",
                 search_alg=optuna_search,
                 scheduler=asha_scheduler,
                 num_samples=self.num_samples,
@@ -273,24 +299,30 @@ class YOLOTuner:
 
         self.results = tuner.fit()
 
+        if self.analysis_enabled:
+            try:
+                analyze_ray_results(self.results.experiment_path, top_n=self.analysis_top_n)
+            except Exception as e:
+                print(f"Tuning analysis skipped: {e}")
+
         try:
-            self.best_output_dir = get_output_dir("burr_detection/sample_data/training/outputs", "tuning", timestamp)
+            self.best_output_dir = get_output_dir(self.outputs_dir, "tuning", timestamp)
             self.best_output_dir.mkdir(parents=True, exist_ok=True)
-            results_df = self.results.get_dataframe(filter_metric='val_loss', filter_mode='min')
+            results_df = self.results.get_dataframe(filter_metric='objective', filter_mode='min')
             results_df.to_csv(self.best_output_dir / "all_tuning_history.csv", index=False)
 
-            # Find the best trial (lowest val loss of any epoch)
+            # Find the best trial (lowest composite objective of any epoch)
             best_overall_trial = min(
                 self.results,
-                key=lambda trial: trial.metrics_dataframe['val_loss'].min()
+                key=lambda trial: trial.metrics_dataframe['objective'].min()
             )
             best_overall_trial.metrics_dataframe.to_csv(self.best_output_dir / "best_trial_training_history.csv", index=False)
 
-            # Find best epoch weights by val f1
-            best_f1_idx = best_overall_trial.metrics_dataframe['val_f1'].idxmax()
-            best_f1_row = best_overall_trial.metrics_dataframe.loc[best_f1_idx]
-            checkpoint_dir_name = best_f1_row['checkpoint_dir_name']
-            model_size = str(best_f1_row.get('config/model_size', 'yolo_model')).replace('.pt', '')
+            # Find best epoch weights by composite objective
+            best_obj_idx = best_overall_trial.metrics_dataframe['objective'].idxmin()
+            best_obj_row = best_overall_trial.metrics_dataframe.loc[best_obj_idx]
+            checkpoint_dir_name = best_obj_row['checkpoint_dir_name']
+            model_size = str(best_obj_row.get('config/model_size', 'yolo_model')).replace('.pt', '')
 
             best_trial_dir = Path(best_overall_trial.path)
             checkpoint_dir = best_trial_dir / checkpoint_dir_name
