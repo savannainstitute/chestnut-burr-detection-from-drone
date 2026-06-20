@@ -20,7 +20,7 @@ training_steps:
   
 training_params: # or starting point for tuning 
   - model_size: yolov8s.pt
-    imgsz: 416
+    imgsz: 224
     optimizer: SGD
     lr0: 0.007535468502919781
     lrf: 0.006106862115975325
