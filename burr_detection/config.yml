@@ -20,29 +20,20 @@ training_steps:
   
 training_params: # or starting point for tuning 
   - model_size: yolov8s.pt
-    imgsz: 224
     optimizer: SGD
     lr0: 0.007535468502919781
     lrf: 0.006106862115975325
     momentum: 0.860563804337033
     weight_decay: 0.007999986538396332
-    warmup_epochs: 3
-    warmup_bias_lr: 0.0005237641264861536
-    warmup_momentum: 0.8655155814680603
-    box_gain: 14.642890413087773
+    box_gain: 7.5
     cls_gain: 0.7502019533851836
     dfl_gain: 1.6487943474402535
     hsv_h: 0.0024535962939831795
     hsv_s: 0.21180924495072723
     hsv_v: 0.1921254122518909
     degrees: 0.9028471314034809
-    scale: 0.9935851265818587
-    shear: 0.14716577647104162
-    perspective: 5.065853668326687e-06
-    mosaic: 0.04734403640366158
-    mixup: 0.01198115725527923
-    copy_paste: 0.06990794938558989
-    dropout: 0.1127393987394648
+    scale: 0.5
+    flipud: 0.5
 
 # Composite objective for tuning + best-model selection.
 # Optimizes a gain-invariant blend instead of raw val_loss (which is confounded
@@ -68,33 +59,27 @@ analysis:
 
 tuning_space:
   model_size: ["yolo11s.pt", "yolo11m.pt", "yolov8s.pt", "yolov8m.pt"]
-  imgsz: [224]
   optimizer: ["AdamW", "SGD", "Adam"]
   lr0: {"loguniform": [0.0005, 0.01]}
   lrf: {"loguniform": [0.001, 0.1]} # fraction of initial lr (decays towards lrf*lr0)
   momentum: {"uniform": [0.85, 0.98]}
   weight_decay: {"loguniform": [0.0001, 0.01]}
-  warmup_epochs: [2, 3, 4, 5]
-  warmup_bias_lr: {"loguniform": [0.000001, 0.0006]}
-  warmup_momentum: {"uniform": [0.7, 0.9]}
-  box_gain: {"uniform": [12.0, 20.0]}
+  box_gain: {"uniform": [4.0, 12.0]}     # spans the 7.5 default -- lets the search balance box vs cls/dfl
   cls_gain: {"uniform": [0.5, 2.0]}
   dfl_gain: {"uniform": [1.5, 3.0]}
   hsv_h: {"uniform": [0.001, 0.005]}
   hsv_s: {"uniform": [0.1, 0.3]}
   hsv_v: {"uniform": [0.1, 0.25]}
-  degrees: {"uniform": [0.0, 2.0]}
-  scale: {"uniform": [0.9, 1.0]}
-  shear: {"uniform": [0.0, 0.5]}
-  perspective: {"uniform": [0.0, 0.00001]}
-  mosaic: {"uniform": [0.0, 0.2]}
-  mixup: {"uniform": [0.0, 0.05]}
-  copy_paste: {"uniform": [0.0, 0.2]}
-  dropout: {"uniform": [0.0, 0.2]}
+  degrees: {"uniform": [0.0, 180.0]}   # nadir imagery: rotation is free + fully valid
+  scale: {"uniform": [0.2, 0.5]}        # moderate -- high scale shrinks small burrs out of existence
+  flipud: {"uniform": [0.0, 0.5]}       # vertical flip prob -- nadir imagery has no canonical "up"
 
 ray_tune:
   num_samples: 150
   max_concurrent_trials: 2
+  # Seed trial 0 with training_params (warm start). Turn on once you have a config that
+  # fits the current search space; leave off to explore from scratch.
+  warm_start: false
 
 inference:
   model_path: null # specify path to model .pt, or use most-recent from training/tuning
@@ -104,17 +89,18 @@ inference:
   tile_batch_size: 96       # tiles per batched predict() call
 
 data:
-  # Sample-data defaults (download burr_detection/sample_data from Google Drive; the
-  # full_canopy/ set below ships there). Point at your own dataset with
-  # `--data-root <dir>`, which overrides these paths at runtime.
-  training_dir: burr_detection/sample_data/training/tiled        # written by --mode preprocess
+  # Bundled sample (download burr_detection/sample_data from Google Drive): the cleaned
+  # Orchard 4 tile set in training/tiled/ (ready to split + train), plus the source canopy
+  # images + polygon labels in training/full_canopy/ for reference/re-tiling. Point at your
+  # own dataset with `--data-root <dir>` to tile full_canopy/ via the tiler.
+  training_dir: burr_detection/sample_data/training/tiled
   outputs_dir: burr_detection/sample_data/training/outputs
   image_selections: image_selection/sample_data/outputs/best_image_selections.json
-  # Tiling source for --mode preprocess: canopy images + polygon burr labels + canopy masks.
-  full_res_images_dir: burr_detection/sample_data/training/full_canopy/images
-  polygon_labels_dir: burr_detection/sample_data/training/full_canopy/labels
-  canopy_labels_dir: burr_detection/sample_data/training/full_canopy/canopy
-  incorrect_tiles_denylist: burr_detection/sample_data/training/incorrect_tiles_denylist.txt
+  # Tiling source for --mode preprocess; null = split the pre-made tiles in training_dir.
+  # --data-root sets these to <root>/full_canopy/{images,labels,canopy}.
+  full_res_images_dir: null
+  polygon_labels_dir: null
+  canopy_labels_dir: null
   # Model for false-negative label augmentation (null = skip; set via --data-root or here).
   audit_model: null
   augment_conf: 0.4
