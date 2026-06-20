@@ -457,19 +457,17 @@ def _dedup_boxes(boxes, iou_thresh):
 
 
 def create_tiled_dataset(images_dir, labels_dir, output_dir, canopy_dir=None,
-                         denylist=None, tile_size: int = 224, overlap: float = 0.2,
+                         tile_size: int = 224, overlap: float = 0.2,
                          min_canopy_frac: float = 0.15, min_edge_keep_frac: float = 0.35,
                          bg_keep_ratio: float = 0.3, dedup_iou: float = 0.8,
                          seed: int = 666) -> Dict:
     """Tile full canopy images + polygon burr labels into a YOLO detection dataset.
 
     For each image: optionally crop+mask to its canopy polygon (matching the inference
-    `CanopyTiler` and the original pipeline), tile at tile_size/overlap, clip each burr
-    bbox to the tile, and write tiles + YOLO bbox labels. The geometry matches
-    `CanopyTiler`, so tile stems align with the original tiling for denylist matching.
+    `CanopyTiler`), tile at tile_size/overlap, clip each burr bbox to the tile, and write
+    tiles + YOLO bbox labels. The geometry matches `CanopyTiler`.
 
     Filtering:
-      - drop tiles whose stem is in `denylist` (the manual 'Incorrect' set),
       - drop mostly-background tiles (< min_canopy_frac non-masked pixels) — catches the
         unreviewed edge tiles that padding introduces,
       - drop tiny edge-clipped burr fragments (< min_edge_keep_frac of the burr area),
@@ -483,18 +481,15 @@ def create_tiled_dataset(images_dir, labels_dir, output_dir, canopy_dir=None,
         labels_dir: YOLO-segment burr polygon labels (one .txt per image).
         output_dir: destination for images/, labels/, and the split files.
         canopy_dir: optional YOLO-segment canopy polygons (for masking); None = no mask.
-        denylist: iterable of tile stems to exclude (e.g. the 'Incorrect' tiles).
     """
     images_dir, labels_dir, output_dir = Path(images_dir), Path(labels_dir), Path(output_dir)
     canopy_dir = Path(canopy_dir) if canopy_dir else None
-    deny = set(denylist) if denylist else set()
     rng = random.Random(seed)
     tiler = CanopyTiler(tile_size=tile_size, overlap=overlap)
 
     out_images = output_dir / "images"
     out_labels = output_dir / "labels"
-    # Clear any previous run so re-tiling is idempotent -- stale tiles must not survive
-    # (e.g. when a denylist now excludes tiles a prior run kept).
+    # Clear any previous run so re-tiling is idempotent -- stale tiles must not survive.
     for d in (out_images, out_labels):
         if d.exists():
             shutil.rmtree(d)
@@ -539,9 +534,6 @@ def create_tiled_dataset(images_dir, labels_dir, output_dir, canopy_dir=None,
             tile_stem = f"{stem}_{ty}_{tx}"
             stats['generated'] += 1
 
-            if tile_stem in deny:
-                stats['denied'] += 1
-                continue
             # Canopy coverage = fraction of non-masked (non-black) pixels.
             coverage = float(np.count_nonzero(tile.any(axis=2))) / float(tile_size * tile_size)
             if coverage < min_canopy_frac:
@@ -586,6 +578,6 @@ def create_tiled_dataset(images_dir, labels_dir, output_dir, canopy_dir=None,
     summary['split'] = counts
     print(f"\nTiler: generated {stats['generated']}, kept {stats['kept']} "
           f"(fg {stats['fg']}, bg {stats['bg']}), {stats['boxes']} boxes | "
-          f"denied {stats['denied']}, low-canopy {stats['low_canopy']}, bg-dropped {stats['bg_dropped']}, "
+          f"low-canopy {stats['low_canopy']}, bg-dropped {stats['bg_dropped']}, "
           f"dup-boxes removed {stats['dedup_removed']}")
     return summary
