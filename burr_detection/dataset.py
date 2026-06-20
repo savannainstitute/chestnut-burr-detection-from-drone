@@ -4,27 +4,161 @@ Handles dataset preparation, image tiling, and aggregating tree-level detections
 """
 import numpy as np
 import random
+import re
+from collections import defaultdict
 from pathlib import Path
-from PIL import Image, ImageDraw
-from typing import List, Tuple, Dict
+from PIL import Image, ImageDraw, ImageOps
+from typing import List, Tuple, Dict, Callable, Optional
 import yaml
 
 from burr_detection.utils import set_seed
 
 
-def prepare_dataset_splits(images_dir: Path, labels_dir: Path, output_dir: Path, 
-                   splits: Tuple[float, float, float] = (0.7, 0.2, 0.1), 
-                   seed: int = 666) -> Dict[str, int]:
+_BURR_TILE_GROUP_RE = re.compile(r"^(.*)_\d+_\d+$")
+
+
+def burr_tile_group_key(path) -> str:
+    """Group key for pre-cut burr tiles named '<source>_<x>_<y>'.
+
+    Strips the trailing two integer offset fields so every tile cut from the
+    same source canopy (e.g. 'route9_orchard3_115_537_537') maps to one group
+    ('route9_orchard3_115'). Falls back to the full stem when the name does not
+    end in two integer fields.
+    """
+    stem = Path(path).stem
+    m = _BURR_TILE_GROUP_RE.match(stem)
+    return m.group(1) if m else stem
+
+
+def _count_label_lines(label_path) -> int:
+    """Count non-empty lines (annotations) in a YOLO label file."""
+    label_path = Path(label_path)
+    if not label_path.exists():
+        return 0
+    with open(label_path) as f:
+        return sum(1 for line in f if line.strip())
+
+
+def _group_balanced_split(image_files, labels_dir, group_key_fn,
+                          splits=(0.7, 0.2, 0.1), seed=666):
+    """Split images into train/val/test by source GROUP (never splitting a
+    group across sets) while balancing annotation counts and tile counts.
+
+    Tiles cut from one source canopy share a group key, so grouping prevents
+    tree-level leakage (sibling tiles landing in both train and test).
+
+    Returns (train_files, val_files, test_files) as lists of Paths.
+    """
+    labels_dir = Path(labels_dir)
+    split_names = ["train", "val", "test"]
+    fracs = dict(zip(split_names, splits))
+
+    # Build groups: {key: {"files": [...], "annotations": int, "tiles": int}}
+    grouped: Dict[str, Dict] = {}
+    for img in image_files:
+        key = group_key_fn(img)
+        g = grouped.setdefault(key, {"files": [], "annotations": 0, "tiles": 0})
+        g["files"].append(img)
+        g["annotations"] += _count_label_lines(labels_dir / f"{Path(img).stem}.txt")
+        g["tiles"] += 1
+
+    fg_groups, bg_groups = [], []
+    for name, g in grouped.items():
+        item = {"name": name, "annotations": g["annotations"], "tiles": g["tiles"]}
+        (fg_groups if item["annotations"] > 0 else bg_groups).append(item)
+
+    if not fg_groups:
+        raise ValueError("No foreground groups (all labels empty); cannot build a meaningful split.")
+
+    total_ann = sum(g["annotations"] for g in fg_groups)
+    total_fg_tiles = sum(g["tiles"] for g in fg_groups)
+    target_ann = {k: fracs[k] * total_ann for k in split_names}
+    target_fg_tiles = {k: fracs[k] * total_fg_tiles for k in split_names}
+
+    rng = random.Random(seed)
+    rng.shuffle(fg_groups)
+    fg_groups.sort(key=lambda g: g["annotations"], reverse=True)
+
+    state = {k: {"groups": [], "ann": 0, "tiles": 0, "fg_groups": 0} for k in split_names}
+
+    def assign(group, split_key):
+        state[split_key]["groups"].append(group["name"])
+        state[split_key]["ann"] += group["annotations"]
+        state[split_key]["tiles"] += group["tiles"]
+        if group["annotations"] > 0:
+            state[split_key]["fg_groups"] += 1
+
+    # Guarantee minimum FG-group presence in val/test when enough FG groups exist.
+    min_fg = {"train": 1, "val": 0, "test": 0}
+    if len(fg_groups) >= 2:
+        min_fg["val"] = 1
+    if len(fg_groups) >= 3:
+        min_fg["test"] = 1
+
+    # Establish minimum FG presence with the SMALLEST groups, so the large
+    # (burr-dense) trees stay for the main pass and flow to the biggest-target
+    # split (train) instead of saturating val/test on skewed data.
+    for split_key in ["test", "val", "train"]:
+        while state[split_key]["fg_groups"] < min_fg[split_key] and fg_groups:
+            smallest_i = min(range(len(fg_groups)), key=lambda i: fg_groups[i]["annotations"])
+            assign(fg_groups.pop(smallest_i), split_key)
+
+    # Assign remaining FG groups (largest first) to the split with the lowest
+    # projected load ratio vs its target. This proportional greedy fills the
+    # biggest-target split (train) first and converges to the target fractions,
+    # instead of parking big trees in whichever split's target matches their size.
+    for g in fg_groups:
+        best_split, best_score = None, None
+        for split_key in split_names:
+            ann_ratio = (state[split_key]["ann"] + g["annotations"]) / max(1.0, target_ann[split_key])
+            tile_ratio = (state[split_key]["tiles"] + g["tiles"]) / max(1.0, target_fg_tiles[split_key])
+            score = 0.7 * ann_ratio + 0.3 * tile_ratio
+            if best_score is None or score < best_score:
+                best_split, best_score = split_key, score
+        assign(g, best_split)
+
+    # Assign pure-background groups to the current largest tile-count deficit.
+    total_tiles = sum(g["tiles"] for g in grouped.values())
+    target_total_tiles = {k: fracs[k] * total_tiles for k in split_names}
+    rng.shuffle(bg_groups)
+    for g in bg_groups:
+        best_split = max(split_names, key=lambda k: target_total_tiles[k] - state[k]["tiles"])
+        assign(g, best_split)
+
+    files = {k: [] for k in split_names}
+    for k in split_names:
+        for gname in state[k]["groups"]:
+            files[k].extend(grouped[gname]["files"])
+
+    def pct(x):
+        return 100.0 * x / total_ann if total_ann > 0 else 0.0
+    print("\nGroup-aware split (no source group spans splits):")
+    for k in split_names:
+        print(f"  {k.capitalize():5s}: {len(files[k]):4d} tiles, {len(state[k]['groups']):3d} groups, "
+              f"{state[k]['ann']:5d} annotations ({pct(state[k]['ann']):.1f}%)")
+    print(f"  Total: {total_tiles} tiles, {len(grouped)} groups, {total_ann} foreground annotations")
+
+    return files["train"], files["val"], files["test"]
+
+
+def prepare_dataset_splits(images_dir: Path, labels_dir: Path, output_dir: Path,
+                   splits: Tuple[float, float, float] = (0.7, 0.2, 0.1),
+                   seed: int = 666,
+                   group_key_fn: Optional[Callable[[Path], str]] = None) -> Dict[str, int]:
     """
     Create train/val/test splits and save .txt files with image paths
-    
+
     Args:
         images_dir: Directory containing training images
         labels_dir: Directory containing YOLO label files
         output_dir: Directory to save split .txt files
         splits: Tuple of (train, val, test) split ratios
         seed: Random seed for reproducibility
-        
+        group_key_fn: Optional callable mapping an image path to a group key. When
+            provided, tiles are split by group (no group spans splits) with
+            annotation/tile balancing, preventing tree-level leakage. When None,
+            falls back to a plain random per-image shuffle (legacy behavior).
+
     Returns:
         Dictionary with counts for each split
     """
@@ -50,15 +184,20 @@ def prepare_dataset_splits(images_dir: Path, labels_dir: Path, output_dir: Path,
         print(f"Warning: {len(missing_labels)} images have no corresponding labels")
         all_image_files = [f for f in all_image_files if f.name not in missing_labels]
     
-    random.shuffle(all_image_files)
-    train_ratio, val_ratio, _ = splits
-    
-    train_split = int(train_ratio * len(all_image_files))
-    val_split = int((train_ratio + val_ratio) * len(all_image_files))
-    
-    train_files = all_image_files[:train_split]
-    val_files = all_image_files[train_split:val_split]
-    test_files = all_image_files[val_split:]
+    if group_key_fn is not None:
+        train_files, val_files, test_files = _group_balanced_split(
+            all_image_files, labels_dir, group_key_fn, splits=splits, seed=seed
+        )
+    else:
+        random.shuffle(all_image_files)
+        train_ratio, val_ratio, _ = splits
+
+        train_split = int(train_ratio * len(all_image_files))
+        val_split = int((train_ratio + val_ratio) * len(all_image_files))
+
+        train_files = all_image_files[:train_split]
+        val_files = all_image_files[train_split:val_split]
+        test_files = all_image_files[val_split:]
     
     split_files = {
         'train.txt': train_files,
@@ -120,8 +259,8 @@ class CanopyTiler:
         Returns:
             Cropped and masked canopy image as numpy array
         """
-        image = Image.open(image_path).convert('RGB')
-        
+        image = ImageOps.exif_transpose(Image.open(image_path)).convert('RGB')
+
         coords_array = np.array(polygon_coords)
         x_min = int(np.floor(coords_array[:, 0].min()))
         y_min = int(np.floor(coords_array[:, 1].min()))
@@ -213,5 +352,235 @@ class CanopyTiler:
                     'confidence': tile_det['confidences'][i],
                     'label': tile_det['labels'][i] if 'labels' in tile_det else 0
                 })
-        
+
         return all_detections
+
+    def reconstruct_detections_core(self, tile_detections: List[Dict],
+                                    tile_info: List[Dict]) -> List[Dict]:
+        """Combine tile predictions to full-image coords, keeping only detections
+        whose box CENTER falls inside each tile's non-overlapping core region.
+
+        With overlapping tiles, an object straddling a seam is detected in two or
+        more tiles; plain NMS can miss the duplicates when the partial boxes barely
+        overlap, inflating the count. Assigning each detection to the single tile
+        whose core contains its center structurally prevents double-counting. The
+        core is the tile inset by half the overlap on each side, except on
+        image-boundary sides where it extends to the edge (so true edge burrs are
+        kept). A light global NMS pass afterwards resolves exact seam ties.
+        """
+        margin = (self.tile_size - self.stride) / 2.0
+        all_detections = []
+
+        for tile_det, info in zip(tile_detections, tile_info):
+            if len(tile_det['boxes']) == 0:
+                continue
+
+            tile_x, tile_y = info['tile_x'], info['tile_y']
+            img_w, img_h = info['original_width'], info['original_height']
+
+            core_x0 = tile_x + (margin if tile_x > 0 else 0)
+            core_y0 = tile_y + (margin if tile_y > 0 else 0)
+            core_x1 = (tile_x + self.tile_size) - (margin if (tile_x + self.tile_size) < img_w else 0)
+            core_y1 = (tile_y + self.tile_size) - (margin if (tile_y + self.tile_size) < img_h else 0)
+
+            boxes = tile_det['boxes'].copy()
+            boxes[:, [0, 2]] += tile_x
+            boxes[:, [1, 3]] += tile_y
+
+            for i, box in enumerate(boxes):
+                cx = (box[0] + box[2]) / 2.0
+                cy = (box[1] + box[3]) / 2.0
+                if not (core_x0 <= cx <= core_x1 and core_y0 <= cy <= core_y1):
+                    continue
+                clipped = box.copy()
+                clipped[[0, 2]] = np.clip(clipped[[0, 2]], 0, img_w)
+                clipped[[1, 3]] = np.clip(clipped[[1, 3]], 0, img_h)
+                all_detections.append({
+                    'box': clipped,
+                    'confidence': tile_det['confidences'][i],
+                    'label': tile_det['labels'][i] if 'labels' in tile_det else 0
+                })
+
+        return all_detections
+
+
+def _polygon_label_to_bbox(parts, w: int, h: int):
+    """A YOLO-segment label line (cls x1 y1 x2 y2 ...) -> pixel bbox on a (w,h) image."""
+    xs = [float(parts[i]) * w for i in range(1, len(parts) - 1, 2)]
+    ys = [float(parts[i]) * h for i in range(2, len(parts), 2)]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _largest_polygon_px(label_path: Path, w: int, h: int):
+    """Read the largest polygon (by vertex count) from a YOLO-seg file as pixel coords."""
+    if not label_path.exists():
+        return None
+    best = None
+    for line in label_path.read_text().splitlines():
+        p = line.split()
+        if len(p) < 7:
+            continue
+        pts = [(float(p[i]) * w, float(p[i + 1]) * h) for i in range(1, len(p) - 1, 2)]
+        if best is None or len(pts) > len(best):
+            best = pts
+    return best
+
+
+def _dedup_boxes(boxes, iou_thresh):
+    """Greedily drop boxes overlapping a kept (larger) box by >= iou_thresh.
+
+    Conservative de-duplication of obvious double-annotations: at a high threshold
+    (e.g. 0.8) only near-identical boxes are removed, never genuinely distinct
+    (touching) burrs. Returns the kept boxes.
+    """
+    if not iou_thresh or iou_thresh >= 1.0 or len(boxes) < 2:
+        return boxes
+    order = sorted(range(len(boxes)), key=lambda i: -(boxes[i][2] - boxes[i][0]) * (boxes[i][3] - boxes[i][1]))
+    kept = []
+    for i in order:
+        b = boxes[i]
+        is_dup = False
+        for k in kept:
+            ix1, iy1 = max(b[0], k[0]), max(b[1], k[1])
+            ix2, iy2 = min(b[2], k[2]), min(b[3], k[3])
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            if inter <= 0:
+                continue
+            union = (b[2] - b[0]) * (b[3] - b[1]) + (k[2] - k[0]) * (k[3] - k[1]) - inter
+            if union > 0 and inter / union >= iou_thresh:
+                is_dup = True
+                break
+        if not is_dup:
+            kept.append(b)
+    return kept
+
+
+def create_tiled_dataset(images_dir, labels_dir, output_dir, canopy_dir=None,
+                         denylist=None, tile_size: int = 224, overlap: float = 0.2,
+                         min_canopy_frac: float = 0.15, min_edge_keep_frac: float = 0.35,
+                         bg_keep_ratio: float = 0.3, dedup_iou: float = 0.8,
+                         seed: int = 666) -> Dict:
+    """Tile full canopy images + polygon burr labels into a YOLO detection dataset.
+
+    For each image: optionally crop+mask to its canopy polygon (matching the inference
+    `CanopyTiler` and the original pipeline), tile at tile_size/overlap, clip each burr
+    bbox to the tile, and write tiles + YOLO bbox labels. The geometry matches
+    `CanopyTiler`, so tile stems align with the original tiling for denylist matching.
+
+    Filtering:
+      - drop tiles whose stem is in `denylist` (the manual 'Incorrect' set),
+      - drop mostly-background tiles (< min_canopy_frac non-masked pixels) — catches the
+        unreviewed edge tiles that padding introduces,
+      - drop tiny edge-clipped burr fragments (< min_edge_keep_frac of the burr area),
+      - keep only `bg_keep_ratio` of burr-free (canopy-but-no-burr) tiles as hard negatives.
+
+    Then writes a group-aware train/val/test split (no source tree spans splits).
+    Returns a stats dict.
+
+    Args:
+        images_dir: full-resolution per-tree canopy images.
+        labels_dir: YOLO-segment burr polygon labels (one .txt per image).
+        output_dir: destination for images/, labels/, and the split files.
+        canopy_dir: optional YOLO-segment canopy polygons (for masking); None = no mask.
+        denylist: iterable of tile stems to exclude (e.g. the 'Incorrect' tiles).
+    """
+    images_dir, labels_dir, output_dir = Path(images_dir), Path(labels_dir), Path(output_dir)
+    canopy_dir = Path(canopy_dir) if canopy_dir else None
+    deny = set(denylist) if denylist else set()
+    rng = random.Random(seed)
+    tiler = CanopyTiler(tile_size=tile_size, overlap=overlap)
+
+    out_images = output_dir / "images"
+    out_labels = output_dir / "labels"
+    out_images.mkdir(parents=True, exist_ok=True)
+    out_labels.mkdir(parents=True, exist_ok=True)
+
+    stats = defaultdict(int)
+    image_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")))
+    if not image_files:
+        raise FileNotFoundError(f"No images found in {images_dir}")
+
+    for img_path in image_files:
+        stem = img_path.stem
+        with Image.open(img_path) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            full_w, full_h = im.size
+            full_arr = np.array(im)
+
+        # Burr bboxes in full-image pixel coords (from the polygon labels).
+        burrs = []
+        lbl = labels_dir / f"{stem}.txt"
+        if lbl.exists():
+            for line in lbl.read_text().splitlines():
+                p = line.split()
+                if len(p) >= 7:
+                    burrs.append(_polygon_label_to_bbox(p, full_w, full_h))
+
+        # Crop + mask to the canopy polygon (offsets needed to translate burr boxes).
+        off_x = off_y = 0
+        canopy_poly = _largest_polygon_px(canopy_dir / f"{stem}.txt", full_w, full_h) if canopy_dir else None
+        if canopy_poly:
+            xs = [c[0] for c in canopy_poly]
+            ys = [c[1] for c in canopy_poly]
+            off_x, off_y = int(np.floor(min(xs))), int(np.floor(min(ys)))
+            canopy_arr = tiler.crop_canopy_from_polygon(img_path, canopy_poly)
+        else:
+            canopy_arr = full_arr
+        burrs = [(x1 - off_x, y1 - off_y, x2 - off_x, y2 - off_y) for (x1, y1, x2, y2) in burrs]
+
+        tiles, info = tiler.tile_image(canopy_arr)
+        for tile, meta in zip(tiles, info):
+            tx, ty = meta['tile_x'], meta['tile_y']
+            tile_stem = f"{stem}_{ty}_{tx}"
+            stats['generated'] += 1
+
+            if tile_stem in deny:
+                stats['denied'] += 1
+                continue
+            # Canopy coverage = fraction of non-masked (non-black) pixels.
+            coverage = float(np.count_nonzero(tile.any(axis=2))) / float(tile_size * tile_size)
+            if coverage < min_canopy_frac:
+                stats['low_canopy'] += 1
+                continue
+
+            tile_boxes = []
+            for (bx1, by1, bx2, by2) in burrs:
+                ix1, iy1 = max(bx1, tx), max(by1, ty)
+                ix2, iy2 = min(bx2, tx + tile_size), min(by2, ty + tile_size)
+                iw, ih = ix2 - ix1, iy2 - iy1
+                if iw <= 0 or ih <= 0:
+                    continue
+                clipped = bx1 < tx or by1 < ty or bx2 > tx + tile_size or by2 > ty + tile_size
+                if clipped and (iw * ih) / max(1.0, (bx2 - bx1) * (by2 - by1)) < min_edge_keep_frac:
+                    continue  # tiny edge sliver
+                tile_boxes.append((ix1 - tx, iy1 - ty, ix2 - tx, iy2 - ty))  # tile-local px
+
+            n_before = len(tile_boxes)
+            tile_boxes = _dedup_boxes(tile_boxes, dedup_iou)
+            stats['dedup_removed'] += n_before - len(tile_boxes)
+            lines = [
+                f"0 {((x1 + x2) / 2.0) / tile_size:.6f} {((y1 + y2) / 2.0) / tile_size:.6f} "
+                f"{(x2 - x1) / tile_size:.6f} {(y2 - y1) / tile_size:.6f}"
+                for (x1, y1, x2, y2) in tile_boxes
+            ]
+
+            is_bg = len(lines) == 0
+            if is_bg and rng.random() > bg_keep_ratio:
+                stats['bg_dropped'] += 1
+                continue
+
+            Image.fromarray(tile).save(out_images / f"{tile_stem}.jpg", quality=95)
+            (out_labels / f"{tile_stem}.txt").write_text("\n".join(lines))
+            stats['kept'] += 1
+            stats['fg' if not is_bg else 'bg'] += 1
+            stats['boxes'] += len(lines)
+
+    counts = prepare_dataset_splits(out_images, out_labels, output_dir,
+                                    seed=seed, group_key_fn=burr_tile_group_key)
+    summary = dict(stats)
+    summary['split'] = counts
+    print(f"\nTiler: generated {stats['generated']}, kept {stats['kept']} "
+          f"(fg {stats['fg']}, bg {stats['bg']}), {stats['boxes']} boxes | "
+          f"denied {stats['denied']}, low-canopy {stats['low_canopy']}, bg-dropped {stats['bg_dropped']}, "
+          f"dup-boxes removed {stats['dedup_removed']}")
+    return summary
