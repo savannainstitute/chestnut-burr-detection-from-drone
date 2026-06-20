@@ -129,15 +129,16 @@ chestnut-burr-detection-from-drone/
 │       └── best_image_selections.json
 │
 └── burr_detection/
-    ├── detection.py                    # Entry point: train / tune / inference
+    ├── detection.py                    # Entry point: preprocess / train / tune / inference
     ├── training.py                     # Multi-step progressive YOLO training
     ├── tuning.py                       # Ray Tune + Optuna hyperparameter search
     ├── inference.py                    # Tile-and-detect inference pipeline
-    ├── dataset.py                      # Dataset splitting and canopy tiling
-    ├── utils.py                        # NMS, evaluation, plotting, metrics
-    ├── config.yml                      # Training, tuning, and inference config
+    ├── dataset.py                      # Group-aware splitting, canopy tiling, polygon tiler
+    ├── utils.py                        # NMS, evaluation, plotting, metrics, label augmentation
+    ├── config.yml                      # Preprocess, training, tuning, and inference config
+    ├── tests/                          # CPU-only unit checks (split, objective, tiling, ...)
     └── sample_data/
-        ├── training/inputs/            # Labeled images + YOLO-format labels
+        ├── training/inputs/            # Labeled sample tiles + YOLO-format labels
         ├── training/outputs/           # Training and tuning run artifacts
         └── inference/outputs/          # Inference run artifacts
 ```
@@ -362,44 +363,77 @@ python -m image_selection.canopy_to_image `
 **Entry point:** `burr_detection/detection.py`  
 **Config:** `burr_detection/config.yml`
 
-Three modes are available: `train`, `tune`, and `inference`. All are accessed through the same entry point:
+Four modes are available: `preprocess`, `train`, `tune`, and `inference`. All are accessed through the same entry point:
 
 ```powershell
 conda activate burr-detection
 
 python -m burr_detection.detection `
-    --mode <train|tune|inference> `
+    --mode <preprocess|train|tune|inference> `
     --config "burr_detection/config.yml" `
+    --data-root "<your dataset root>" `   # optional; overrides the sample-data paths
     --plot-mode <all|subset|none>
 ```
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--mode` | `inference` | `train`, `tune`, or `inference` |
-| `--config` | `burr_detection/config.yml` | Path to YAML config file |
+| `--mode` | `inference` | `preprocess`, `train`, `tune`, or `inference` |
+| `--config` | `burr_detection/config.yml` | Path to YAML config file (the committed config points at the bundled sample data) |
+| `--data-root` | _(none)_ | Point the pipeline at your own dataset *without editing the committed config*; derives the `tiled/`, `full_canopy/`, `outputs/` layout (see below) |
 | `--plot-mode` | `subset` | `all` (every image), `subset` (15 random), `none` |
+
+**Typical workflow:** `preprocess` (build the tiled training set) → `tune` (search hyperparameters) → copy the best hyperparameters into `training_params` → `train` (final model) → `inference`. Once trained weights are published, `inference` can run standalone.
 
 ---
 
-### Labeled Dataset Format
+### Dataset Format and Preprocessing (`--mode preprocess`)
 
-Training and tuning expect YOLO-format labeled data organized as:
+`--mode preprocess` builds the training set and is the first step before `train`/`tune`. Given
+full-resolution per-tree canopy images plus **polygon** (segmentation) burr labels, it:
+
+1. Crops/masks each image to its canopy polygon and tiles it into 224×224 patches (20% overlap),
+   clipping burr polygons to each tile and deriving bounding boxes; mostly-background tiles are dropped.
+2. Drops tiles listed in `incorrect_tiles_denylist.txt` and de-duplicates overlapping boxes.
+3. Creates a **group-aware** train/val/test split (70/20/10) where all tiles cut from one source tree
+   stay in the same split — preventing the tree-level leakage a plain per-tile shuffle would cause.
+4. Optionally **augments** labels with high-confidence predictions from a reference model
+   (`data.audit_model`) to recover missed burrs (false negatives), de-duplicated by containment so a
+   tighter model box inside a loose human box is not added twice.
+5. Saves QA overlays so you can confirm labels align with the imagery.
+
+> **Where the data comes from:** Steps 1–3 produce the per-tree canopy *images*, and the canopy polygon comes from segmentation (Step 2) — but the **burr polygon labels are not produced by the pipeline.** You create them by hand-annotating the canopy images (e.g., in Roboflow), since the detector learns from human-drawn labels.
+
+Expected dataset layout (produced by your annotation/export step; pass its root with `--data-root`):
 
 ```
-burr_detection/sample_data/training/inputs/
-├── images/    # .jpg or .png image tiles (224×224 recommended)
-└── labels/    # matching .txt files, one per image
-               # each line: <class_id> <cx> <cy> <w> <h>  (normalized 0–1)
+<data-root>/
+├── full_canopy/
+│   ├── images/    # full-resolution per-tree canopy images
+│   ├── labels/    # YOLO-segment polygon burr labels (one .txt per image)
+│   └── canopy/    # YOLO-segment canopy polygon per image (used for masking)
+├── incorrect_tiles_denylist.txt    # optional: tile stems to exclude
+├── reference/best_tuned_*.pt        # optional: model used for label augmentation
+└── tiled/                           # written by --mode preprocess (the training set)
 ```
 
-The config `data.training_dir` points to the `inputs/` parent directory:
-
-```yaml
-data:
-  training_dir: burr_detection/sample_data/training/inputs
+```powershell
+python -m burr_detection.detection --mode preprocess `
+    --data-root "<data-root>" --plot-mode subset
 ```
 
-Train/val/test splits (70/20/10 by default, seed 666) are created automatically at the start of each training or tuning run. No labeled dataset is distributed with this repository; users must provide their own YOLO-format annotations.
+The committed `config.yml` points at the **bundled sample** under
+`burr_detection/sample_data/training/full_canopy/` (populated by the Google Drive download), so
+`--mode preprocess` with no `--data-root` tiles the sample into `…/training/tiled/`. `preprocess`
+always tiles from `full_canopy/` (there is no separate pre-cut-tiles input) and must run before
+`train`/`tune`. The full dataset is distributed via Google Drive, not committed to git.
+
+You can also chain the whole pipeline in one command — `tune` hands its winning hyperparameters
+directly to `train`:
+
+```powershell
+python -m burr_detection.detection --mode preprocess,tune,train,inference `
+    --data-root "<data-root>" --plot-mode subset
+```
 
 ---
 
@@ -409,12 +443,12 @@ Trains a YOLO model using **multi-step progressive gradient accumulation**, whic
 
 | Step | Physical Batch | Accumulate | Effective Batch | Max Epochs | Patience | Layers Unfrozen |
 |------|---------------|------------|-----------------|------------|----------|-----------------|
-| 1 | 8 | 1 | 8 | 50 | 10 | Head only |
-| 2 | 8 | 4 | 32 | 50 | 15 | Head + 3 layers |
-| 3 | 8 | 16 | 128 | 50 | 20 | Head + 4 layers |
-| 4 | 8 | 64 | 512 | 50 | 25 | All layers |
+| 1 | 8 | 1 | 8 | 50 | 10 | Detection head (predictor) |
+| 2 | 8 | 4 | 32 | 50 | 15 | Full head (neck + predictor) |
+| 3 | 8 | 16 | 128 | 50 | 20 | Head + last ⅓ of backbone |
+| 4 | 8 | 64 | 512 | 50 | 25 | Full model |
 
-The learning rate is scaled as `lr = lr0 × √(effective_batch / 4)` at each step. Progressive unfreezing starts from the detection head and gradually extends to the backbone. The best checkpoint across all steps and epochs is selected by F1 score on the validation set and saved as `best_model_weights.pt`.
+The learning rate is scaled per step as `lr = min(lr0, max_lr0) × (effective_batch / 64)^0.5`, capped at `max_scaled_lr`. Progressive unfreezing is **architecture-aware** (read from the model YAML) and re-applied on the live trainer at the start of each step, so the curriculum actually takes effect. The best-epoch optimizer state is **carried across each step boundary** (momentum is preserved through the unfreeze), and the learning rate is **warmed up** over a few epochs at each transition. The best checkpoint across all steps/epochs is selected by a **composite objective** (validation loss + F1 + mAP50) and saved as `best_model_weights.pt`.
 
 ```powershell
 python -m burr_detection.detection --mode train `
@@ -426,7 +460,7 @@ python -m burr_detection.detection --mode train `
 
 | File | Description |
 |------|-------------|
-| `best_model_weights.pt` | Best checkpoint by validation F1 across all steps |
+| `best_model_weights.pt` | Best checkpoint across all steps (by the composite objective) |
 | `training_metrics.csv` | Per-epoch: learning rate, losses, precision, recall, mAP50, F1 |
 | `test_results.csv` | Held-out test set: precision, recall, F1, mAP50, inference time |
 | `train_step{1-4}/` | Per-step YOLO run directories (weights, results.csv, plots) |
@@ -435,6 +469,8 @@ python -m burr_detection.detection --mode train `
 **Performance**
 
 The detector is **YOLOv8s** (the `training_params` default; the tuning search may also select `yolo11n/s` or `yolov8n`).
+
+> The figures below are from the **prior production model**; metrics will change after re-tuning/training on the current (group-split, augmented) dataset.
 
 *Full dataset (production model)* — YOLOv8s on the held-out test split (174 images, 1,936 burrs), ~3.6 ms/img inference on an RTX 4060 Laptop GPU:
 
@@ -470,8 +506,9 @@ The detector is **YOLOv8s** (the `training_params` default; the tuning search ma
 Searches the hyperparameter space using **Ray Tune with Optuna (Bayesian) search** and ASHA early stopping:
 
 - Default: 50 trials, up to 2 concurrent
-- ASHA scheduler prunes underperforming trials after a 10-epoch grace period
-- Primary optimization metric: minimum validation loss (for scheduling); final model selected by maximum validation F1
+- ASHA scheduler prunes underperforming trials, with a grace window across each progressive-unfreeze step transition so a recovering trial isn't pruned on the transition spike
+- Optimization metric (scheduling **and** best-model selection): a **composite objective** = validation loss + (1−F1) + (1−mAP50), chosen so that tuning the box/cls/dfl loss gains does not confound the objective
+- NaN/inf losses are replaced with a sentinel value (a degenerate trial is pruned, not crashed)
 - The `training_params` entry in the config is used as a warm-start point for Optuna
 
 ```powershell
@@ -509,7 +546,7 @@ python -m burr_detection.detection --mode tune `
 | `test_results.csv` | Test set evaluation of best model |
 | `prediction_plots/` | Prediction visualizations |
 
-Tuning checkpoints per-epoch to `<trial_dir>/checkpoint_<epoch>/` (model weights + state), allowing trials to resume after interruption.
+Tuning checkpoints per-epoch to `<trial_dir>/checkpoint_<epoch>/` (model weights + state), allowing trials to resume after interruption. Hyperparameter-importance and top-trial curves (`hp_importance.png`, `top_trial_curves.png`, `trial_summary.csv`) are written to the Ray experiment directory at the end of the run.
 
 ---
 
@@ -520,9 +557,9 @@ Detects burrs on unlabeled canopy images using a tile-and-reconstruct strategy:
 For each tree in `best_image_selections.json`:
 1. Crop the canopy polygon region from the full drone image (mask outside region to black)
 2. Tile the cropped canopy into 224×224 patches with 20% overlap (stride = 179 px); skip all-black tiles
-3. Run YOLO inference on each tile (confidence threshold 0.5 by default)
-4. Reconstruct tile-space detections back to full canopy coordinates by adding tile offsets
-5. Apply NMS (IoU threshold 0.45) to suppress duplicate detections from tile overlap
+3. Run YOLO inference on the tiles in batches (`inference.tile_batch_size`), confidence threshold 0.5 by default
+4. Reconstruct tile-space detections to full canopy coordinates, keeping only detections whose box **center** lies in each tile's non-overlapping **core** region — so a burr in the overlap seam is counted once, not double-counted
+5. Apply a light global NMS (`inference.global_nms_iou`, default 0.3) to resolve any residual cross-tile duplicates
 6. Aggregate per tree: total detections, average confidence, bounding box coordinates
 
 The model is **auto-detected** from the most recent `training_*/` or `tuning_*/` output directory when `inference.model_path` is `null`. To use a specific model, set `inference.model_path` to an explicit path.
@@ -539,7 +576,9 @@ python -m burr_detection.detection --mode inference `
 inference:
   model_path: null          # null = auto-detect most recent training/tuning output
   conf_threshold: 0.5
-  iou_threshold: 0.45
+  iou_threshold: 0.45        # per-tile NMS during predict()
+  global_nms_iou: 0.3        # light cross-tile NMS after core-region filtering
+  tile_batch_size: 96        # tiles per batched predict() call
 
 data:
   image_selections: image_selection/sample_data/outputs/best_image_selections.json
@@ -569,7 +608,7 @@ data:
 - **Single class:** The detector is configured for one object class (burr); multi-class use requires label and config changes
 - **Canopy segmentation:** One-to-one mapping between markers and canopies; touching or overlapping crowns are not automatically split without separate markers per crown and, as such, outputs usually require manual cleanup. ## TODO: instance segmentation from point cloud
 - **Image selection:** Does not account for occlusion of a canopy by adjacent trees or branches
-- **Inference tiling:** Tile size (224×224) and overlap (20%) are fixed and require source edits to change
+- **Tiling:** Tile size (224×224) and overlap (20%) match across preprocessing and inference; both are configurable via the `data.tiling` and `inference` keys in `config.yml`
 - **Metashape license:** Agisoft Metashape Professional is required for Steps 1 and 3; the included wheel is version 2.2.2
 
 ---
