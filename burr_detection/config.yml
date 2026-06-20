@@ -1,20 +1,20 @@
 # YOLO Burr Detection Configuration
 
 training_steps:
-  - batch: 8
+  - batch: 16
     accumulate: 1
     max_epochs: 50
     patience: 10
-  - batch: 8
-    accumulate: 4
+  - batch: 64
+    accumulate: 1
     max_epochs: 50
     patience: 15
-  - batch: 8
-    accumulate: 16
+  - batch: 64
+    accumulate: 4 
     max_epochs: 50
     patience: 20
-  - batch: 8
-    accumulate: 64
+  - batch: 64
+    accumulate: 16
     max_epochs: 50
     patience: 25
   
