@@ -12,15 +12,15 @@ from burr_detection.dataset import CanopyTiler
 
 class YOLOInference:
     def __init__(self, model_path, image_selections_path, conf_threshold, iou_threshold,
-                 plot_mode='subset', global_nms_iou=0.3, tile_batch_size=96,
-                 outputs_dir="burr_detection/sample_data/training/outputs"):
+                 plot_mode='subset', global_nms_iou=0.3, tile_batch_size=96, tile_size=224,
+                 overlap=0.2, outputs_dir="burr_detection/sample_data/training/outputs"):
         self.outputs_dir = outputs_dir
         self.model_path = self._get_model_path(model_path)
         print(f"\nLoading model: {self.model_path}")
         self.model = YOLO(self.model_path)
         self.image_selection_path = Path(image_selections_path)
         self.selections = self._load_selections(self.image_selection_path)
-        self.tiler = CanopyTiler(tile_size=224, overlap=0.2)
+        self.tiler = CanopyTiler(tile_size=tile_size, overlap=overlap)
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
         self.global_nms_iou = global_nms_iou
@@ -81,6 +81,7 @@ class YOLOInference:
                     batch_imgs,
                     conf=self.conf_threshold,
                     iou=self.iou_threshold,
+                    imgsz=self.tiler.tile_size,  # native tile size -- no resize
                     verbose=False
                 )
                 for pred in preds:
