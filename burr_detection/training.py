@@ -151,6 +151,14 @@ class YOLOTrainer:
 
         self.yaml_path = yaml_path
 
+        # imgsz inherits the tile size produced by the CanopyTiler (square tiles), so the
+        # model always trains at native resolution -- no up/downscaling of the tiles.
+        from PIL import Image as _PILImage
+        _tiles = sorted((Path(yolo_data_dir) / "images").glob("*.jpg")) or \
+                 sorted((Path(yolo_data_dir) / "images").glob("*.png"))
+        self.imgsz = _PILImage.open(_tiles[0]).width if _tiles else 224
+        print(f"imgsz = {self.imgsz} (native tile size, no resize)")
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
         if device == "cpu":
             print(f"CUDA not available, using CPU for training")
@@ -251,7 +259,7 @@ class YOLOTrainer:
                 epochs=epochs_to_run,
                 patience=step["patience"],
                 batch=step["batch"],
-                imgsz=config.get("imgsz", 416),
+                imgsz=self.imgsz,
                 lr0=scaled_lr,
                 lrf=config.get("lrf", 0.01),
                 optimizer=config.get("optimizer", "AdamW"),
