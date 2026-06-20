@@ -13,7 +13,7 @@ from burr_detection.inference import YOLOInference
 from burr_detection.utils import load_config, plot_dataset_samples, get_output_dir
         
 
-def run_training(args, config: Dict, override_params=None):
+def run_training(args, config: Dict, run_dir, override_params=None):
     """Train model using best known hyperparameters from config.
 
     If override_params is given (e.g. the winning hyperparameters from a preceding
@@ -41,13 +41,13 @@ def run_training(args, config: Dict, override_params=None):
         plot_mode=args.plot_mode,
         conf_threshold=config['inference']['conf_threshold'],
         iou_threshold=config['inference']['iou_threshold'],
-        outputs_dir=config['data'].get('outputs_dir')
+        output_dir=Path(run_dir) / "train"
     )
 
     print(f"\nTraining complete! Results saved to: {trainer.output_dir}")
 
 
-def run_tuning(args, config: Dict):
+def run_tuning(args, config: Dict, run_dir):
     print("\n" + "="*80)
     print("Starting Hyperparameter Tuning")
     print("="*80)
@@ -57,7 +57,10 @@ def run_tuning(args, config: Dict):
         max_concurrent_trials=config['ray_tune']['max_concurrent_trials'],
         yolo_data_dir=str(Path(config['data']['training_dir'])),
         training_steps=config['training_steps'],
-        points_to_evaluate=config['training_params'],
+        # Seed trial 0 with training_params only when warm_start is on; otherwise Optuna
+        # explores from scratch (use after the search space changes substantially).
+        points_to_evaluate=(config['training_params']
+                            if config['ray_tune'].get('warm_start', False) else None),
         tuning_space=config['tuning_space'],
         conf_threshold=config['inference']['conf_threshold'],
         iou_threshold=config['inference']['iou_threshold'],
@@ -65,7 +68,7 @@ def run_tuning(args, config: Dict):
         score_weights=config.get('score_weights'),
         analysis_enabled=config.get('analysis', {}).get('enabled', True),
         analysis_top_n=config.get('analysis', {}).get('top_n', 10),
-        outputs_dir=config['data'].get('outputs_dir', 'burr_detection/sample_data/training/outputs')
+        outputs_dir=str(Path(run_dir) / "tune")
     )
 
     tuner.run()
@@ -84,7 +87,7 @@ def run_tuning(args, config: Dict):
     return None
 
 
-def run_inference(args, config: Dict):
+def run_inference(args, config: Dict, run_dir):
     print("\n" + "="*80)
     print("Burr detection on unlabeled canopy images")
     print("="*80)
@@ -100,6 +103,7 @@ def run_inference(args, config: Dict):
         tile_batch_size=config['inference'].get('tile_batch_size', 96),
         tile_size=tiling.get('tile_size', 224),
         overlap=tiling.get('overlap', 0.2),
+        output_dir=Path(run_dir) / "inference",
         outputs_dir=config['data'].get('outputs_dir', 'burr_detection/sample_data/training/outputs')
     )
     inference.run()
@@ -107,7 +111,7 @@ def run_inference(args, config: Dict):
     print(f"Inference complete! Results saved to: {inference.output_dir}")
 
 
-def run_preprocess(args, config: Dict):
+def run_preprocess(args, config: Dict, run_dir):
     """Build/refresh the tiled training set, then save QA overlays + optional augmentation.
 
     If data.full_res_images_dir + polygon_labels_dir are set (e.g. via --data-root), runs the
@@ -158,8 +162,8 @@ def run_preprocess(args, config: Dict):
         )
     print(f"\nDataset ready at: {training_dir}")
 
-    out_base = data.get('outputs_dir') or str(training_dir.parent / "outputs")
-    out_dir = get_output_dir(out_base, "preprocess")
+    out_dir = Path(run_dir) / "preprocess"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     if args.plot_mode != 'none':
         num_samples = 24 if args.plot_mode == 'all' else 8
@@ -278,16 +282,22 @@ Examples:
     if bad:
         parser.error(f"invalid --mode value(s) {bad}; choose from {valid} (single or comma-separated)")
 
+    # One run folder per invocation: outputs/run_<ts>/{preprocess,tune,train,inference}/
+    outputs_base = config['data'].get('outputs_dir', 'burr_detection/sample_data/training/outputs')
+    run_dir = get_output_dir(outputs_base, "run")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\nRun outputs -> {run_dir}")
+
     tuned_params = None
     for mode in modes:
         if mode == 'preprocess':
-            run_preprocess(args, config)
+            run_preprocess(args, config, run_dir)
         elif mode == 'tune':
-            tuned_params = run_tuning(args, config)
+            tuned_params = run_tuning(args, config, run_dir)
         elif mode == 'train':
-            run_training(args, config, override_params=tuned_params)
+            run_training(args, config, run_dir, override_params=tuned_params)
         else:  # inference
-            run_inference(args, config)
+            run_inference(args, config, run_dir)
 
 
 if __name__ == "__main__":
