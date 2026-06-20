@@ -406,6 +406,32 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
+def install_resilient_write_bytes(retries: int = 8, base_delay: float = 0.25):
+    """Make ``pathlib.Path.write_bytes`` retry on transient Windows PermissionError.
+
+    On Windows, an on-access AV/indexer scan can briefly hold an open handle to a
+    file right after it is written; the next overwrite of that same file then fails
+    with ``PermissionError: [Errno 13]``. Ultralytics rewrites last.pt/best.pt every
+    epoch, so a single unlucky scan kills the whole trial. Retrying the write a few
+    times with a short backoff rides out the scan instead. Idempotent and process-wide.
+    """
+    if getattr(Path.write_bytes, "_burr_retry_wrapped", False):
+        return
+    _orig_write_bytes = Path.write_bytes
+
+    def write_bytes(self, data):
+        for attempt in range(retries):
+            try:
+                return _orig_write_bytes(self, data)
+            except PermissionError:
+                if attempt == retries - 1:
+                    raise
+                time.sleep(base_delay * (attempt + 1))
+
+    write_bytes._burr_retry_wrapped = True
+    Path.write_bytes = write_bytes
+
+
 def is_notebook():
     """Check if running in a Jupyter notebook"""
     try:
