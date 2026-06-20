@@ -93,7 +93,7 @@ tuning_space:
   dropout: {"uniform": [0.0, 0.2]}
 
 ray_tune:
-  num_samples: 50
+  num_samples: 150
   max_concurrent_trials: 2
 
 inference:
