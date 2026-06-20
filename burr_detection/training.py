@@ -18,7 +18,7 @@ from ultralytics import YOLO
 
 from burr_detection.utils import (SmoothedValue, MetricLogger, set_seed, evaluate_test_set,
                                   plot_ground_truth_vs_predictions, get_output_dir,
-                                  compute_composite_objective)
+                                  compute_composite_objective, install_resilient_write_bytes)
 
 
 def set_trainable_layers(model, num_layers, runtime_model=None):
@@ -134,6 +134,7 @@ class YOLOTrainer:
         if config is None:
             config = {}
         set_seed(666)
+        install_resilient_write_bytes()  # ride out transient Windows file-locks on weight writes
         os.environ['TQDM_DISABLE'] = '1'
         try:
             from tqdm import tqdm
@@ -195,6 +196,11 @@ class YOLOTrainer:
         self._prev_stage_trainable_tensors = None
         self._pending_handoff_snapshot = None
         self.metrics_history = []
+        # last.pt/best.pt are written every epoch regardless; epoch{N}.pt is the extra
+        # per-epoch write. Direct training reads epoch{N}.pt below for best-epoch
+        # selection, so keep it there; during tuning the Ray checkpoints carry the
+        # model, so drop it (save_period=-1) to cut Windows file-lock churn.
+        save_period = 1 if self.ray_tune_callback is None else -1
         print("\n" + "-" * 80)
         print(f"Starting YOLO training: {self.model_size}")
         print("-" * 80)
@@ -294,7 +300,7 @@ class YOLOTrainer:
                 workers=0,
                 plots=False,
                 save=True,
-                save_period=1,
+                save_period=save_period,
                 verbose=False
             )
             best_model_path = str(output_dir / f"train_step{step_idx+1}" / "weights" / "best.pt")
