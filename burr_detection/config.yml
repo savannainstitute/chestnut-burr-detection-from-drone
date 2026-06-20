@@ -67,7 +67,7 @@ analysis:
   top_n: 10
 
 tuning_space:
-  model_size: ["yolo11n.pt", "yolo11s.pt", "yolov8n.pt", "yolov8s.pt"]
+  model_size: ["yolo11s.pt", "yolo11m.pt", "yolov8s.pt", "yolov8m.pt"]
   imgsz: [224]
   optimizer: ["AdamW", "SGD", "Adam"]
   lr0: {"loguniform": [0.0005, 0.01]}
