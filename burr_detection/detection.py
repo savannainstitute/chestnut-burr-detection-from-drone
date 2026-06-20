@@ -89,6 +89,7 @@ def run_inference(args, config: Dict):
     print("Burr detection on unlabeled canopy images")
     print("="*80)
 
+    tiling = config['data'].get('tiling', {})
     inference = YOLOInference(
         model_path=config['inference']['model_path'],
         image_selections_path=config['data']['image_selections'],
@@ -97,6 +98,8 @@ def run_inference(args, config: Dict):
         plot_mode=args.plot_mode,
         global_nms_iou=config['inference'].get('global_nms_iou', 0.3),
         tile_batch_size=config['inference'].get('tile_batch_size', 96),
+        tile_size=tiling.get('tile_size', 224),
+        overlap=tiling.get('overlap', 0.2),
         outputs_dir=config['data'].get('outputs_dir', 'burr_detection/sample_data/training/outputs')
     )
     inference.run()
@@ -105,14 +108,15 @@ def run_inference(args, config: Dict):
 
 
 def run_preprocess(args, config: Dict):
-    """Build the tiled training set from full-resolution canopy images + polygon labels.
+    """Build/refresh the tiled training set, then save QA overlays + optional augmentation.
 
-    Runs the in-module polygon tiler (canopy mask -> tile -> clip polygons to bboxes ->
-    denylist/quality filters -> group-aware split) to (re)generate training_dir, saves
-    QA sample overlays, and -- if data.audit_model is set -- augments the labels with the
-    model's high-confidence predictions to recover missed burrs across all splits.
+    If data.full_res_images_dir + polygon_labels_dir are set (e.g. via --data-root), runs the
+    in-module polygon tiler (canopy mask -> tile -> clip polygons to bboxes -> quality
+    filters -> group-aware split). Otherwise -- the bundled sample case -- splits the pre-made
+    cleaned tiles already in training_dir. Then saves QA sample overlays and, if data.audit_model
+    is set, augments labels with the model's high-confidence predictions to recover missed burrs.
     """
-    from burr_detection.dataset import create_tiled_dataset
+    from burr_detection.dataset import create_tiled_dataset, prepare_dataset_splits, burr_tile_group_key
     from burr_detection.utils import augment_labels_with_model
 
     print("\n" + "="*80)
@@ -122,35 +126,36 @@ def run_preprocess(args, config: Dict):
     data = config['data']
     training_dir = Path(data['training_dir'])
     split_cfg = config.get('split', {})
+    fracs = tuple(split_cfg.get('fracs', [0.7, 0.2, 0.1]))
     seed = split_cfg.get('seed', 666)
 
     src_images = data.get('full_res_images_dir')
     src_labels = data.get('polygon_labels_dir')
-    if not (src_images and src_labels):
-        raise SystemExit(
-            "preprocess needs data.full_res_images_dir + data.polygon_labels_dir "
-            "(canopy images + polygon burr labels). Set them in config.yml, or pass "
-            "--data-root <dir> with a full_canopy/{images,labels,canopy} layout."
+    if src_images and src_labels:
+        tcfg = data.get('tiling', {}) or {}
+        print(f"Tiling full-resolution images from: {src_images}")
+        create_tiled_dataset(
+            images_dir=src_images,
+            labels_dir=src_labels,
+            output_dir=training_dir,
+            canopy_dir=data.get('canopy_labels_dir'),
+            tile_size=tcfg.get('tile_size', 224),
+            overlap=tcfg.get('overlap', 0.2),
+            min_canopy_frac=tcfg.get('min_canopy_frac', 0.15),
+            bg_keep_ratio=tcfg.get('bg_keep_ratio', 0.3),
+            dedup_iou=tcfg.get('dedup_iou', 0.8),
+            seed=seed,
         )
-    tcfg = data.get('tiling', {}) or {}
-    denylist = None
-    deny_path = data.get('incorrect_tiles_denylist')
-    if deny_path and Path(deny_path).exists():
-        denylist = set(Path(deny_path).read_text().split())
-    print(f"Tiling full-resolution images from: {src_images}")
-    create_tiled_dataset(
-        images_dir=src_images,
-        labels_dir=src_labels,
-        output_dir=training_dir,
-        canopy_dir=data.get('canopy_labels_dir'),
-        denylist=denylist,
-        tile_size=tcfg.get('tile_size', 224),
-        overlap=tcfg.get('overlap', 0.2),
-        min_canopy_frac=tcfg.get('min_canopy_frac', 0.15),
-        bg_keep_ratio=tcfg.get('bg_keep_ratio', 0.3),
-        dedup_iou=tcfg.get('dedup_iou', 0.8),
-        seed=seed,
-    )
+    else:
+        # No tiling source: split the pre-made cleaned tiles already in training_dir
+        # (the bundled sample ships finished, cleaned tiles).
+        print(f"Splitting pre-made tiles in: {training_dir}")
+        prepare_dataset_splits(
+            images_dir=training_dir / 'images',
+            labels_dir=training_dir / 'labels',
+            output_dir=training_dir,
+            splits=fracs, seed=seed, group_key_fn=burr_tile_group_key,
+        )
     print(f"\nDataset ready at: {training_dir}")
 
     out_base = data.get('outputs_dir') or str(training_dir.parent / "outputs")
@@ -189,7 +194,6 @@ def _apply_data_root(config, data_root):
       <root>/tiled                              -> training_dir
       <root>/outputs                            -> outputs_dir
       <root>/full_canopy/{images,labels,canopy} -> tiling source
-      <root>/incorrect_tiles_denylist.txt       -> denylist (if present)
       <root>/reference/best_tuned_yolov8s.pt    -> audit/augmentation model (if present)
     """
     root = Path(data_root)
@@ -199,8 +203,6 @@ def _apply_data_root(config, data_root):
     d['full_res_images_dir'] = str(root / 'full_canopy' / 'images')
     d['polygon_labels_dir'] = str(root / 'full_canopy' / 'labels')
     d['canopy_labels_dir'] = str(root / 'full_canopy' / 'canopy')
-    deny = root / 'incorrect_tiles_denylist.txt'
-    d['incorrect_tiles_denylist'] = str(deny) if deny.exists() else None
     model = root / 'reference' / 'best_tuned_yolov8s.pt'
     if model.exists():
         d['audit_model'] = str(model)
@@ -260,8 +262,8 @@ Examples:
         '--data-root',
         type=str,
         default=None,
-        help='Root of your dataset; derives tiled/, full_canopy/, outputs/, the denylist '
-             'and reference model, overriding the sample paths. Unset = use sample data.'
+        help='Root of your dataset; derives tiled/, full_canopy/, outputs/ and the reference '
+             'model, overriding the sample paths. Unset = use sample data.'
     )
 
     args = parser.parse_args()
