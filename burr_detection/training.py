@@ -130,7 +130,7 @@ class YOLOTrainer:
         self.best_model_path = None
         logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
-    def train(self, yolo_data_dir, config=None, conf_threshold=0.5, iou_threshold=0.45, plot_mode='subset', outputs_dir=None):
+    def train(self, yolo_data_dir, config=None, conf_threshold=0.5, iou_threshold=0.45, plot_mode='subset', outputs_dir=None, output_dir=None):
         if config is None:
             config = {}
         set_seed(666)
@@ -165,8 +165,11 @@ class YOLOTrainer:
 
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        base = str(outputs_dir) if outputs_dir else str(Path(yolo_data_dir).parent / "outputs")
-        output_dir = get_output_dir(base, "training", timestamp)
+        if output_dir is not None:
+            output_dir = Path(output_dir)        # exact dir (e.g. run_<ts>/train or a tuning trial dir)
+        else:
+            base = str(outputs_dir) if outputs_dir else str(Path(yolo_data_dir).parent / "outputs")
+            output_dir = get_output_dir(base, "training", timestamp)
         output_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir = output_dir
 
@@ -279,9 +282,10 @@ class YOLOTrainer:
                 scale=config.get("scale", 0.5),
                 shear=config.get("shear", 0),
                 perspective=config.get("perspective", 0),
-                mosaic=config.get("mosaic", 1.0),
+                mosaic=config.get("mosaic", 0.0),  # off -- shrinks small burrs + stitches unnatural canopy composites
                 mixup=config.get("mixup", 0),
                 copy_paste=config.get("copy_paste", 0),
+                flipud=config.get("flipud", 0.5),  # vertical flip on -- nadir imagery has no canonical "up" (like fliplr)
                 dropout=config.get("dropout", 0),
                 project=str(output_dir),
                 name=f"train_step{step_idx+1}",
