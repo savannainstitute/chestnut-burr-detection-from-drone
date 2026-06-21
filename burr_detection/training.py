@@ -13,12 +13,13 @@ from copy import deepcopy
 from pathlib import Path
 from datetime import timedelta
 import logging
+from typing import cast
 import torch
 from ultralytics import YOLO
 
 from burr_detection.utils import (SmoothedValue, MetricLogger, set_seed, evaluate_test_set,
                                   plot_ground_truth_vs_predictions, get_output_dir,
-                                  compute_composite_objective, install_resilient_write_bytes)
+                                  compute_composite_objective)
 
 
 def set_trainable_layers(model, num_layers, runtime_model=None):
@@ -105,7 +106,9 @@ class YOLOTrainer:
         # warm the learning rate up over this many epochs at each step transition.
         self.step_transition_warmup_epochs = 5.0
         self._pending_handoff_snapshot = None
+        self._pending_model_handoff_state = None
         self._current_step_best_snapshot = None
+        self._current_step_best_model_state = None
         self._current_step_best_objective = float("inf")
         self._step_start_lr = None
         self._step_target_lr = None
@@ -134,7 +137,6 @@ class YOLOTrainer:
         if config is None:
             config = {}
         set_seed(666)
-        install_resilient_write_bytes()  # ride out transient Windows file-locks on weight writes
         os.environ['TQDM_DISABLE'] = '1'
         try:
             from tqdm import tqdm
@@ -192,15 +194,21 @@ class YOLOTrainer:
         lr_scale_power = config.get("lr_scale_power", 0.5)
         max_scaled_lr = config.get("max_scaled_lr", 0.03)
         self.score_weights = config.get("score_weights", self.score_weights)
-        best_model_path = None
         self._prev_stage_trainable_tensors = None
         self._pending_handoff_snapshot = None
+        self._pending_model_handoff_state = None
         self.metrics_history = []
-        # last.pt/best.pt are written every epoch regardless; epoch{N}.pt is the extra
-        # per-epoch write. Direct training reads epoch{N}.pt below for best-epoch
-        # selection, so keep it there; during tuning the Ray checkpoints carry the
-        # model, so drop it (save_period=-1) to cut Windows file-lock churn.
-        save_period = 1 if self.ray_tune_callback is None else -1
+        # Direct training saves per-epoch checkpoints (epoch{N}.pt) and reads them
+        # below for best-epoch selection. During tuning we turn Ultralytics
+        # checkpointing off entirely (save=False): it then writes last.pt only once,
+        # on the final epoch, instead of overwriting last.pt/best.pt every epoch --
+        # that repeated overwrite is what raced Windows Defender's on-access scan and
+        # killed trials. The Ray checkpoints carry the model for resume + final
+        # selection, and the progressive step handoff carries the best-objective
+        # weights in-memory (see _on_fit_epoch_end), so nothing here needs the
+        # per-epoch saves.
+        save = self.ray_tune_callback is None
+        save_period = 1 if save else -1
         print("\n" + "-" * 80)
         print(f"Starting YOLO training: {self.model_size}")
         print("-" * 80)
@@ -223,8 +231,23 @@ class YOLOTrainer:
             else:
                 epochs_to_run = step["max_epochs"]
             self.epochs = epochs_to_run
-            if best_model_path and os.path.exists(best_model_path):
-                self.model = YOLO(best_model_path)
+            # Start this step from the previous step's BEST-objective epoch, not its
+            # last epoch -- with lenient early-stopping patience the run continues
+            # well past the best, so handing off the last epoch would throw away the
+            # gains. "Best" is the project's composite objective (the same metric
+            # used for final selection), snapshotted in-memory at that epoch (see
+            # _on_fit_epoch_end) for both direct training and tuning, then loaded into
+            # the existing (correct-nc) wrapper. reset_callbacks() below keeps the
+            # re-added per-step callbacks from stacking on the reused wrapper.
+            if self._pending_model_handoff_state is not None:
+                cast("torch.nn.Module", self.model.model).load_state_dict(self._pending_model_handoff_state)
+                # Ultralytics strips overrides['model'] after each .train() (keeps only
+                # imgsz/data/task/single_cls), so restore it before re-training this
+                # reused wrapper -- model.py builds the train args via
+                # self.overrides['model'] and would otherwise raise KeyError: 'model'.
+                # The actual weights still come from this wrapper (get_model(weights=
+                # self.model)); this value is just the model identifier.
+                self.model.overrides["model"] = self.model_size
             self.current_step = step_idx + 1
             self.current_step_patience = step["patience"]
             # step_idx is 0-based; +1 so step 1 trains the head (not "freeze all").
@@ -248,11 +271,13 @@ class YOLOTrainer:
             self._step_warmup_iter_idx = 0
             self._manual_step_warmup_active = False
             self._current_step_best_snapshot = None
+            self._current_step_best_model_state = None
             self._current_step_best_objective = float("inf")
             if self.current_step == 1:
                 print(f"Dataset: {num_train_images} images, {batches_per_epoch} batches per epoch")
             print(f"Training with effective batch size {int(step['batch']*step['accumulate'])}, lr={scaled_lr:.6f}")
             print()
+            self.model.reset_callbacks()  # clear prior-step callbacks so re-adds don't stack on a reused wrapper
             self.model.add_callback("on_train_start", self._on_train_start)
             self.model.add_callback("on_train_batch_start", self._on_batch_start)
             self.model.add_callback("on_train_batch_end", lambda trainer: self._on_batch_end(trainer, print_freq))
@@ -299,12 +324,12 @@ class YOLOTrainer:
                 device=device,
                 workers=0,
                 plots=False,
-                save=True,
+                save=save,
                 save_period=save_period,
                 verbose=False
             )
-            best_model_path = str(output_dir / f"train_step{step_idx+1}" / "weights" / "best.pt")
             self._pending_handoff_snapshot = deepcopy(self._current_step_best_snapshot)
+            self._pending_model_handoff_state = self._current_step_best_model_state
             total_epochs += getattr(results, 'epoch', epochs_to_run)
         print("\n" + "=" * 80)
         print(f"Training complete - {total_epochs} epochs")
@@ -328,9 +353,9 @@ class YOLOTrainer:
                         precision = row.get("metrics/precision(B)", 0.0)
                         recall = row.get("metrics/recall(B)", 0.0)
                         map50 = row.get("metrics/mAP50(B)", 0.0)
-                        val_loss = (row.get("val/box_loss", 0.0)
-                                    + row.get("val/cls_loss", 0.0)
-                                    + row.get("val/dfl_loss", 0.0))
+                        val_loss = (float(row.get("val/box_loss", 0.0) or 0.0)
+                                    + float(row.get("val/cls_loss", 0.0) or 0.0)
+                                    + float(row.get("val/dfl_loss", 0.0) or 0.0))
                         f1 = self._calculate_f1(precision, recall)
                         obj = compute_composite_objective(val_loss, f1, map50, self.score_weights)
                         if obj < best_obj:
@@ -349,18 +374,19 @@ class YOLOTrainer:
             final_weights_path = Path(output_dir) / "best_model_weights.pt"
             if final_weights:
                 shutil.copy2(final_weights, final_weights_path)
-            self.final_weights_path = Path(final_weights_path)
-            self.best_model_path = Path(best_model_path)
+            self.final_weights_path = final_weights_path
+            self.best_model_path = final_weights_path if final_weights else None
             print(f"Final weights saved to: {final_weights_path}")
 
-            self.test_preds = evaluate_test_set(
-                model_path=final_weights_path if final_weights else best_model_path,
-                training_dir=Path(yolo_data_dir),
-                output_dir=output_dir,
-                plot_mode=plot_mode,
-                conf_threshold=conf_threshold,
-                iou_threshold=iou_threshold
-            )
+            if final_weights:
+                self.test_preds = evaluate_test_set(
+                    model_path=final_weights_path,
+                    training_dir=Path(yolo_data_dir),
+                    output_dir=output_dir,
+                    plot_mode=plot_mode,
+                    conf_threshold=conf_threshold,
+                    iou_threshold=iou_threshold
+                )
             if self.test_preds:
                 images_dir = Path(yolo_data_dir) / "images"
                 labels_dir = Path(yolo_data_dir) / "labels"
@@ -468,6 +494,17 @@ class YOLOTrainer:
             if isinstance(snapshot, dict):
                 self._current_step_best_objective = float(objective)
                 self._current_step_best_snapshot = snapshot
+                # Carry the best-objective epoch's weights to the next progressive
+                # step in-memory, paired with the optimizer snapshot above from this
+                # same epoch. Used for the step handoff in both direct training and
+                # tuning so the next step resumes from the best epoch, not the last
+                # (they diverge under lenient early-stopping patience).
+                model = getattr(trainer, "model", None)
+                if model is not None:
+                    self._current_step_best_model_state = {
+                        k: v.detach().cpu().clone()
+                        for k, v in model.state_dict().items()
+                    }
 
     def _snapshot_optimizer_by_name(self, trainer):
         """Capture optimizer buffers keyed by parameter name (plus the current LR) so
