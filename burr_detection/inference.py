@@ -7,7 +7,7 @@ from PIL import Image
 import random
 from ultralytics import YOLO
 
-from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms, get_output_dir
+from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms, get_output_dir, boxes_to_numpy
 from burr_detection.dataset import CanopyTiler
 
 class YOLOInference:
@@ -91,8 +91,8 @@ class YOLOInference:
                 for pred in preds:
                     if pred.boxes is not None and len(pred.boxes) > 0:
                         tile_detections.append({
-                            'boxes': pred.boxes.xyxy.cpu().numpy(),
-                            'confidences': pred.boxes.conf.cpu().numpy(),
+                            'boxes': boxes_to_numpy(pred.boxes.xyxy),
+                            'confidences': boxes_to_numpy(pred.boxes.conf),
                             'labels': np.zeros(len(pred.boxes))
                         })
                     else:
