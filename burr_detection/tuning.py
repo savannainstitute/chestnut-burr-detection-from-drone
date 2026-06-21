@@ -11,6 +11,8 @@ import time
 import shutil
 import json
 import random
+from typing import cast
+from collections.abc import Iterable
 
 import torch
 from ray import tune
@@ -23,8 +25,7 @@ from ultralytics import YOLO
 from burr_detection.training import YOLOTrainer
 from burr_detection.utils import (set_seed, is_notebook, convert_tuning_space, get_output_dir,
                                   evaluate_test_set, plot_ground_truth_vs_predictions,
-                                  compute_composite_objective, analyze_ray_results,
-                                  install_resilient_write_bytes)
+                                  compute_composite_objective, analyze_ray_results)
 
 class YOLOTuner:
     def __init__(
@@ -78,7 +79,6 @@ class YOLOTuner:
         os.environ['TUNE_DISABLE_STRICT_METRIC_CHECKING'] = '1'
         os.chdir(str(Path(__file__).parent.parent)) # handle relative paths
         set_seed(666)
-        install_resilient_write_bytes()  # ride out transient Windows file-locks on weight writes
 
         checkpoint = tune.get_checkpoint()
         start_step = 0
@@ -102,7 +102,14 @@ class YOLOTuner:
                     yolo_checkpoint_path = str(yolo_model_path)
 
         trial_dir = Path(session.get_trial_dir())
-        output_dir = trial_dir / "yolo_output"
+        # Ultralytics' per-epoch last.pt/best.pt are unreliable inside Ray's trial/
+        # artifact tree on Windows -- Ray's artifact staging removes the large .pt
+        # files mid-trial, so the step handoff and Ultralytics' own post-train reload
+        # then fail (KeyError: 'model' / FileNotFoundError). Point Ultralytics at a
+        # stable dir under the outputs root (keyed by trial id) that the worker writes
+        # and reads back directly, so the weights persist. The model for resume +
+        # final selection rides the Ray checkpoints, not this dir.
+        output_dir = Path(self.outputs_dir).resolve() / "_ultralytics_work" / trial_dir.name
         output_dir.mkdir(parents=True, exist_ok=True)
 
         def ray_tune_callback(metrics):
@@ -190,6 +197,10 @@ class YOLOTuner:
         else:
             trainer.train(self.yolo_data_dir, config=config, output_dir=output_dir)
 
+        # The stable Ultralytics work dir is intermediate only (the model for resume
+        # and final selection rides the Ray checkpoints), so drop it on completion to
+        # bound disk growth. Pruned/errored trials keep theirs for debugging.
+        shutil.rmtree(output_dir, ignore_errors=True)
         return {}
 
     def _resume_training(self, trainer, yolo_data_dir, config, start_step,
@@ -270,10 +281,10 @@ class YOLOTuner:
         if available_gpus > 0:
             gpus_per_trial = available_gpus / max_concurrent
             cpus_per_trial = max(1, available_cpus // max_concurrent)
-            resources = {"cpu": cpus_per_trial, "gpu": gpus_per_trial}
+            resources = {"cpu": float(cpus_per_trial), "gpu": float(gpus_per_trial)}
         else:
             cpus_per_trial = max(1, available_cpus // max_concurrent)
-            resources = {"cpu": cpus_per_trial}
+            resources = {"cpu": float(cpus_per_trial)}
             print("WARNING: CUDA not available. Tuning with CPU only.")
 
         tuner = tune.Tuner(
@@ -290,6 +301,11 @@ class YOLOTuner:
                 name=run_name,
                 progress_reporter=reporter,
                 storage_path=str(Path(self.outputs_dir).resolve()),  # trials nest under run_<ts>/tune/
+                # Retry a failed trial from its last Ray checkpoint instead of losing
+                # it, so a transient fault (e.g. an intermittent CUDA/GPU blip) resumes
+                # rather than killing the trial. Deterministic errors still surface
+                # after exhausting the retries.
+                failure_config=tune.FailureConfig(max_failures=2),
             ),
             param_space=param_space
         )
@@ -310,7 +326,7 @@ class YOLOTuner:
 
             # Find the best trial (lowest composite objective of any epoch)
             best_overall_trial = min(
-                self.results,
+                list(cast(Iterable, self.results)),  # ResultGrid is iterable at runtime
                 key=lambda trial: trial.metrics_dataframe['objective'].min()
             )
             best_overall_trial.metrics_dataframe.to_csv(self.best_output_dir / "best_trial_training_history.csv", index=False)
@@ -344,19 +360,20 @@ class YOLOTuner:
                 "output_dir": str(self.best_output_dir)
             }
 
-            dataset_yaml = Path(self.yolo_data_dir) / "dataset.yml"
+            yolo_data_dir = cast(str, self.yolo_data_dir)  # always set for a real tuning run
+            dataset_yaml = Path(yolo_data_dir) / "dataset.yml"
             if dataset_yaml.exists():
                 self.best_trial_preds = evaluate_test_set(
                     model_path=self.best_model_path,
-                    training_dir=Path(self.yolo_data_dir),
+                    training_dir=Path(yolo_data_dir),
                     output_dir=self.best_output_dir,
                     plot_mode=self.plot_mode,
                     conf_threshold=self.conf_threshold,
                     iou_threshold=self.iou_threshold
                 )
             if self.best_trial_preds:
-                images_dir = Path(self.yolo_data_dir) / "images"
-                labels_dir = Path(self.yolo_data_dir) / "labels"
+                images_dir = Path(yolo_data_dir) / "images"
+                labels_dir = Path(yolo_data_dir) / "labels"
                 plot_dir = Path(self.best_output_dir) / "prediction_plots"
 
                 if self.plot_mode == 'none':
