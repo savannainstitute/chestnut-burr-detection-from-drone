@@ -9,12 +9,12 @@ training_steps:
     accumulate: 1
     max_epochs: 50
     patience: 15
-  - batch: 64
-    accumulate: 4 
+  - batch: 256
+    accumulate: 1 
     max_epochs: 50
     patience: 20
-  - batch: 64
-    accumulate: 16
+  - batch: 256
+    accumulate: 4
     max_epochs: 50
     patience: 25
   
