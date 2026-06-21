@@ -94,7 +94,8 @@ class YOLOTuner:
                 if data_path.exists():
                     with open(data_path, "rb") as fp:
                         checkpoint_state = pickle.load(fp)
-                    start_step = checkpoint_state["current_step"]
+                    # current_step is 1-indexed; start_step is a 0-indexed step_idx.
+                    start_step = max(0, checkpoint_state["current_step"] - 1)
                     step_epochs_completed = checkpoint_state["step_epochs_completed"]
                     total_epochs_so_far = checkpoint_state["total_epochs_so_far"]
 
@@ -226,6 +227,10 @@ class YOLOTuner:
     def run(self, run_name=None):
         """Run hyperparameter tuning with Ray Tune"""
 
+        # Ray >=2.7's new output engine ignores a passed-in reporter; opt back into
+        # the legacy one so our metric_columns/parameter_columns are honored.
+        os.environ["RAY_AIR_NEW_OUTPUT"] = "0"
+
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         if run_name is None:
             run_name = f"YOLO_Optuna_{timestamp}"
@@ -301,11 +306,9 @@ class YOLOTuner:
                 name=run_name,
                 progress_reporter=reporter,
                 storage_path=str(Path(self.outputs_dir).resolve()),  # trials nest under run_<ts>/tune/
-                # Retry a failed trial from its last Ray checkpoint instead of losing
-                # it, so a transient fault (e.g. an intermittent CUDA/GPU blip) resumes
-                # rather than killing the trial. Deterministic errors still surface
-                # after exhausting the retries.
-                failure_config=tune.FailureConfig(max_failures=2),
+                # No retries: a resumed trial would restart the step optimizer/LR
+                # handoff from zero (handoff state is in-memory only, not checkpointed).
+                failure_config=tune.FailureConfig(max_failures=0),
             ),
             param_space=param_space
         )
