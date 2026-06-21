@@ -284,6 +284,7 @@ class YOLOTrainer:
             self.model.add_callback("on_train_epoch_end", self._on_epoch_end)
             self.model.add_callback("on_fit_epoch_end", self._on_fit_epoch_end)
             self.model.add_callback("on_val_end", self._on_val_end)
+            self.model.add_callback("on_train_end", self._on_train_end)
             self.batch_idx = 0
             self._reset_loggers()
             if hasattr(self, '_last_val_epoch'):
@@ -460,6 +461,19 @@ class YOLOTrainer:
         finally:
             self._pending_handoff_snapshot = None
             sys.stdout, sys.stderr = old_stdout, old_stderr
+
+    def _on_train_end(self, trainer):
+        """Write last.pt if missing, so Ultralytics' post-train reload doesn't crash.
+
+        With save=False, Ultralytics only writes last.pt on the final epoch, so an
+        early stop before then leaves none for the reload to load.
+        """
+        try:
+            last_path = getattr(trainer, "last", None)
+            if last_path is not None and not Path(last_path).exists():
+                trainer.save_model()
+        except Exception:
+            pass
 
     def _on_batch_start(self, trainer):
         """Linearly ramp the learning rate from the step's start LR to its target LR
