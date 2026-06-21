@@ -73,14 +73,15 @@ def run_tuning(args, config: Dict, run_dir):
 
     tuner.run()
 
-    if not tuner.best_trial:
+    best_output_dir = tuner.best_output_dir
+    if not tuner.best_trial or best_output_dir is None:
         print("Tuning completed but no best trial found.")
         return None
 
-    print(f"\nTuning complete! Results saved to: {tuner.best_output_dir}")
+    print(f"\nTuning complete! Results saved to: {best_output_dir}")
 
     # Return the best hyperparameters so a chained `train` step can use them.
-    best_cfg_path = Path(tuner.best_output_dir) / "best_trial_config.json"
+    best_cfg_path = Path(best_output_dir) / "best_trial_config.json"
     if best_cfg_path.exists():
         import json
         return json.loads(best_cfg_path.read_text())
