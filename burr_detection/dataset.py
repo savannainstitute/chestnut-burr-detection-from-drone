@@ -9,7 +9,7 @@ import shutil
 from collections import defaultdict
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageOps
-from typing import List, Tuple, Dict, Callable, Optional
+from typing import List, Tuple, Dict, Callable, Optional, Sequence
 import yaml
 
 from burr_detection.utils import set_seed
@@ -249,7 +249,7 @@ class CanopyTiler:
         self.overlap = overlap
         self.stride = int(tile_size * (1 - overlap))
     
-    def crop_canopy_from_polygon(self, image_path: Path, polygon_coords: List[List[float]]) -> np.ndarray:
+    def crop_canopy_from_polygon(self, image_path: Path, polygon_coords: Sequence[Sequence[float]]) -> np.ndarray:
         """
         Crop a canopy region from drone image using polygon coordinates and mask outside areas
         
@@ -574,7 +574,7 @@ def create_tiled_dataset(images_dir, labels_dir, output_dir, canopy_dir=None,
 
     counts = prepare_dataset_splits(out_images, out_labels, output_dir,
                                     seed=seed, group_key_fn=burr_tile_group_key)
-    summary = dict(stats)
+    summary: dict[str, object] = dict(stats)
     summary['split'] = counts
     print(f"\nTiler: generated {stats['generated']}, kept {stats['kept']} "
           f"(fg {stats['fg']}, bg {stats['bg']}), {stats['boxes']} boxes | "
