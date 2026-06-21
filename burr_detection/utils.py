@@ -18,11 +18,19 @@ from ultralytics import YOLO
 import torch
 import torch.distributed as dist
 from torchvision.ops import nms
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any, cast
 
 from ray import tune
 
-## Adapted from PyTorch  detection utils: https://github.com/pytorch/vision/blob/main/references/detection/utils.py
+
+def boxes_to_numpy(t: Any) -> np.ndarray:
+    """Ultralytics Boxes attrs (xyxy/xywhn/conf/cls) are torch Tensors at runtime but
+    loosely typed (often inferred as ndarray); move to CPU + numpy, tolerating an
+    already-numpy backing."""
+    return t.cpu().numpy() if hasattr(t, "cpu") else np.asarray(t)
+
+
+## Adapted from PyTorch detection utils: https://github.com/pytorch/vision/blob/main/references/detection/utils.py
 class SmoothedValue(object):
     """Track a series of values and provide access to smoothed values over a
     window or the global series average.
@@ -406,32 +414,6 @@ def set_seed(seed):
         torch.cuda.manual_seed_all(seed)
 
 
-def install_resilient_write_bytes(retries: int = 8, base_delay: float = 0.25):
-    """Make ``pathlib.Path.write_bytes`` retry on transient Windows PermissionError.
-
-    On Windows, an on-access AV/indexer scan can briefly hold an open handle to a
-    file right after it is written; the next overwrite of that same file then fails
-    with ``PermissionError: [Errno 13]``. Ultralytics rewrites last.pt/best.pt every
-    epoch, so a single unlucky scan kills the whole trial. Retrying the write a few
-    times with a short backoff rides out the scan instead. Idempotent and process-wide.
-    """
-    if getattr(Path.write_bytes, "_burr_retry_wrapped", False):
-        return
-    _orig_write_bytes = Path.write_bytes
-
-    def write_bytes(self, data):
-        for attempt in range(retries):
-            try:
-                return _orig_write_bytes(self, data)
-            except PermissionError:
-                if attempt == retries - 1:
-                    raise
-                time.sleep(base_delay * (attempt + 1))
-
-    write_bytes._burr_retry_wrapped = True
-    Path.write_bytes = write_bytes
-
-
 def is_notebook():
     """Check if running in a Jupyter notebook"""
     try:
@@ -512,9 +494,9 @@ def evaluate_test_set(
     for img_path, pred in zip(test_image_paths, results):
         detections = []
         if pred.boxes is not None and len(pred.boxes) > 0:
-            boxes = pred.boxes.xyxy.cpu().numpy()
-            confs = pred.boxes.conf.cpu().numpy()
-            labels = pred.boxes.cls.cpu().numpy() if hasattr(pred.boxes, 'cls') else np.zeros(len(boxes))
+            boxes = boxes_to_numpy(pred.boxes.xyxy)
+            confs = boxes_to_numpy(pred.boxes.conf)
+            labels = boxes_to_numpy(pred.boxes.cls) if hasattr(pred.boxes, 'cls') else np.zeros(len(boxes))
             for box, conf, label in zip(boxes, confs, labels):
                 detections.append({
                     'box': [float(x) for x in box],
@@ -714,9 +696,9 @@ def export_predictions_as_yolo(model_path, image_paths, output_dir,
     for img_path, pred in zip(image_paths, results):
         lines = []
         if pred.boxes is not None and len(pred.boxes) > 0:
-            xywhn = pred.boxes.xywhn.cpu().numpy()
-            confs = pred.boxes.conf.cpu().numpy()
-            clss = pred.boxes.cls.cpu().numpy().astype(int) if hasattr(pred.boxes, 'cls') else np.zeros(len(xywhn), int)
+            xywhn = boxes_to_numpy(pred.boxes.xywhn)
+            confs = boxes_to_numpy(pred.boxes.conf)
+            clss = boxes_to_numpy(pred.boxes.cls).astype(int) if hasattr(pred.boxes, 'cls') else np.zeros(len(xywhn), int)
             for (cx, cy, w, h), c, cl in zip(xywhn, confs, clss):
                 lines.append(f"{int(cl)} {float(c):.6f} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
         (output_dir / f"{Path(img_path).stem}.txt").write_text("\n".join(lines))
@@ -779,7 +761,7 @@ def analyze_ray_results(experiment_dir, output_dir=None, top_n: int = 10):
     for hp in hp_cols:
         sub = df[[hp, "objective"]].dropna()
         if len(sub) >= 5:
-            rho = sub[hp].corr(sub["objective"], method="spearman")
+            rho = cast(pd.Series, sub[hp]).corr(cast(pd.Series, sub["objective"]), method="spearman")
             if pd.notna(rho):
                 corrs[hp.replace("hp_", "")] = float(rho)
 
@@ -788,7 +770,8 @@ def analyze_ray_results(experiment_dir, output_dir=None, top_n: int = 10):
             cser = pd.Series(corrs)
             cser = cser.reindex(cser.abs().sort_values().index)
             fig, ax = plt.subplots(figsize=(8, max(3, 0.35 * len(cser))))
-            ax.barh(cser.index, cser.values, color=["#2ecc71" if v < 0 else "#e74c3c" for v in cser.values])
+            vals = cser.to_numpy()
+            ax.barh(cser.index, vals, color=["#2ecc71" if v < 0 else "#e74c3c" for v in vals])
             ax.axvline(0, color="k", lw=0.8)
             ax.set_xlabel("Spearman corr with objective (negative = lowers objective)")
             ax.set_title("Hyperparameter importance")
@@ -1005,7 +988,7 @@ def augment_labels_with_model(tiled_dir, model_path, split: str = "train", conf:
             kept = list(orig)
             new_boxes = []
             if r.boxes is not None and len(r.boxes) > 0:
-                for cx, cy, w, h in r.boxes.xywhn.cpu().numpy():
+                for cx, cy, w, h in boxes_to_numpy(r.boxes.xywhn):
                     nb = xyxy(float(cx), float(cy), float(w), float(h))
                     if all(contained(nb, k) < containment_thresh for k in kept):
                         kept.append(nb)
