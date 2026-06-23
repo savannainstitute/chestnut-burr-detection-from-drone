@@ -23,6 +23,22 @@ from typing import List, Dict, Optional, Any, cast
 from ray import tune
 
 
+def pick_device() -> str:
+    """Best available compute device as an ultralytics/torch device string.
+
+    Prefers CUDA (NVIDIA), then Apple Silicon MPS (Metal), else CPU. This keeps the
+    original CUDA path intact on Windows/Linux GPU boxes while letting the pipeline use
+    the GPU on Apple Silicon Macs (where torch.cuda.is_available() is always False).
+    Set PYTORCH_ENABLE_MPS_FALLBACK=1 so any op not yet implemented on MPS falls back to CPU.
+    """
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def boxes_to_numpy(t: Any) -> np.ndarray:
     """Ultralytics Boxes attrs (xyxy/xywhn/conf/cls) are torch Tensors at runtime but
     loosely typed (often inferred as ndarray); move to CPU + numpy, tolerating an

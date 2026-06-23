@@ -290,7 +290,12 @@ class YOLOTuner:
         else:
             cpus_per_trial = max(1, available_cpus // max_concurrent)
             resources = {"cpu": float(cpus_per_trial)}
-            print("WARNING: CUDA not available. Tuning with CPU only.")
+            _mps = getattr(torch.backends, "mps", None)
+            if _mps is not None and _mps.is_available():
+                print("CUDA not available; trials will train on Apple MPS (Ray reserves CPU slots only). "
+                      "MPS is a single shared device, so keep max_concurrent_trials low (1) to avoid contention.")
+            else:
+                print("WARNING: CUDA not available. Tuning with CPU only.")
 
         tuner = tune.Tuner(
             tune.with_resources(self.train_yolo_with_ray, resources=resources),

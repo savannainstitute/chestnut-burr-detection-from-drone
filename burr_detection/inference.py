@@ -7,7 +7,7 @@ from PIL import Image
 import random
 from ultralytics import YOLO
 
-from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms, get_output_dir, boxes_to_numpy
+from burr_detection.utils import plot_ground_truth_vs_predictions, apply_nms, get_output_dir, boxes_to_numpy, pick_device
 from burr_detection.dataset import CanopyTiler
 
 class YOLOInference:
@@ -16,7 +16,8 @@ class YOLOInference:
                  overlap=0.2, outputs_dir="burr_detection/sample_data/training/outputs", output_dir=None):
         self.outputs_dir = outputs_dir
         self.model_path = self._get_model_path(model_path)
-        print(f"\nLoading model: {self.model_path}")
+        self.device = pick_device()  # cuda -> mps (Apple Silicon) -> cpu
+        print(f"\nLoading model: {self.model_path} (device: {self.device})")
         self.model = YOLO(self.model_path)
         self.image_selection_path = Path(image_selections_path)
         self.selections = self._load_selections(self.image_selection_path)
@@ -86,6 +87,7 @@ class YOLOInference:
                     conf=self.conf_threshold,
                     iou=self.iou_threshold,
                     imgsz=self.tiler.tile_size,  # native tile size -- no resize
+                    device=self.device,
                     verbose=False
                 )
                 for pred in preds:

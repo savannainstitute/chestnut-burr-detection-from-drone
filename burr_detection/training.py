@@ -19,7 +19,7 @@ from ultralytics import YOLO
 
 from burr_detection.utils import (SmoothedValue, MetricLogger, set_seed, evaluate_test_set,
                                   plot_ground_truth_vs_predictions, get_output_dir,
-                                  compute_composite_objective)
+                                  compute_composite_objective, pick_device)
 
 
 def set_trainable_layers(model, num_layers, runtime_model=None):
@@ -162,9 +162,8 @@ class YOLOTrainer:
         self.imgsz = _PILImage.open(_tiles[0]).width if _tiles else 224
         print(f"imgsz = {self.imgsz} (native tile size, no resize)")
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        if device == "cpu":
-            print(f"CUDA not available, using CPU for training")
+        device = pick_device()  # cuda -> mps (Apple Silicon) -> cpu
+        print(f"Using device for training: {device}")
 
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")

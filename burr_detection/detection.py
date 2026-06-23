@@ -3,6 +3,11 @@ YOLO Object Detection
 Main file for training, tuning, and inference
 """
 import argparse
+import os
+
+# Let any op not yet implemented on Apple Silicon's MPS backend fall back to CPU instead
+# of erroring. No-op on CUDA/CPU. Must be set before torch initializes its MPS ops.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
 from pathlib import Path
 from typing import Dict
