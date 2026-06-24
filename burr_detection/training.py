@@ -93,9 +93,11 @@ def set_trainable_layers(model, num_layers, runtime_model=None):
 
 
 class YOLOTrainer:
-    def __init__(self, model_size="yolo11n.pt", prints_per_epoch=5, ray_tune_callback=None, training_steps=None, score_weights=None):
-        self.model = YOLO(model_size)
+    def __init__(self, model_size="yolo11n.pt", prints_per_epoch=5, ray_tune_callback=None, training_steps=None, score_weights=None, warmstart=False, tal_topk=None):
+        self.model = self._create_model(model_size, warmstart)
         self.model_size = model_size
+        if tal_topk is not None:
+            self._override_tal_topk(int(tal_topk))
         self.prints_per_epoch = prints_per_epoch
         self.ray_tune_callback = ray_tune_callback
         self.training_steps = training_steps
@@ -132,6 +134,28 @@ class YOLOTrainer:
         self.test_preds = None
         self.best_model_path = None
         logging.getLogger("ultralytics").setLevel(logging.WARNING)
+
+    def _create_model(self, model_size, warmstart):
+        """Build the YOLO model. For a .yaml architecture (the P2 variants) with warmstart,
+        load the matching pretrained .pt -- transfers the backbone + matching layers; the new
+        (P2) head stays randomly initialized and is learned during fine-tuning."""
+        model = YOLO(model_size)
+        if warmstart and str(model_size).endswith(".yaml"):
+            base = Path(model_size).stem.replace("-p2", "").replace("-p6", "")
+            try:
+                model.load(f"{base}.pt")
+                print(f"warm-started {Path(model_size).name} from {base}.pt")
+            except Exception as e:
+                print(f"warm-start from {base}.pt skipped: {e}")
+        return model
+
+    def _override_tal_topk(self, tal_topk):
+        """Fix the TAL assigner top-k via a contained, instance-level init_criterion override
+        (NOT a global monkeypatch). Pinned to ultralytics v8DetectionLoss(model, tal_topk=...)."""
+        from ultralytics.utils.loss import v8DetectionLoss
+        core = self.model.model
+        core.init_criterion = lambda: v8DetectionLoss(core, tal_topk=int(tal_topk))
+        print(f"tal_topk override = {tal_topk}")
 
     def train(self, yolo_data_dir, config=None, conf_threshold=0.5, iou_threshold=0.45, plot_mode='subset', outputs_dir=None, output_dir=None):
         if config is None:
