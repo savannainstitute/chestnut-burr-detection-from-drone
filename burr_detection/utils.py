@@ -2,6 +2,7 @@ import time
 from collections import defaultdict, deque
 import datetime
 import errno
+import json
 import os
 import time
 import yaml
@@ -444,7 +445,9 @@ def evaluate_test_set(
         raise FileNotFoundError(f"dataset.yml not found in {training_dir}. Please run prepare_dataset_splits first.")
 
     model = YOLO(model_path)
-    test_results = model.val(data=str(dataset_yaml), split='test', verbose=False)
+    imgsz = _native_imgsz(sorted((Path(training_dir) / "images").glob("*.jpg")) or
+                          sorted((Path(training_dir) / "images").glob("*.png")))
+    test_results = model.val(data=str(dataset_yaml), split='test', imgsz=imgsz, verbose=False)
 
     model_name = Path(model_path).stem.replace("best_", "")
 
@@ -489,6 +492,7 @@ def evaluate_test_set(
         test_image_paths,
         conf=conf_threshold,
         iou=iou_threshold,
+        imgsz=imgsz,
         verbose=False
     )
     for img_path, pred in zip(test_image_paths, results):
@@ -690,7 +694,8 @@ def export_predictions_as_yolo(model_path, image_paths, output_dir,
     output_dir.mkdir(parents=True, exist_ok=True)
     model = YOLO(model_path)
     image_paths = list(image_paths)
-    results = model.predict(image_paths, conf=conf_threshold, iou=iou_threshold, verbose=False)
+    results = model.predict(image_paths, conf=conf_threshold, iou=iou_threshold,
+                            imgsz=_native_imgsz(image_paths), verbose=False)
 
     n_written = 0
     for img_path, pred in zip(image_paths, results):
@@ -876,11 +881,12 @@ def compute_fn_audit(images_dir, labels_dir, model_path, output_dir,
     model = YOLO(model_path)
 
     img_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")))
+    imgsz = _native_imgsz(img_files)
     rows, preds = [], {}
     for start in range(0, len(img_files), max(1, batch_size)):
         batch = img_files[start:start + batch_size]
         results = model.predict([str(f) for f in batch], conf=conf_threshold,
-                                iou=iou_threshold, verbose=False)
+                                iou=iou_threshold, imgsz=imgsz, verbose=False)
         for f, r in zip(batch, results):
             n_pred = int(len(r.boxes)) if r.boxes is not None else 0
             lf = labels_dir / f"{f.stem}.txt"
@@ -936,9 +942,20 @@ def compute_fn_audit(images_dir, labels_dir, model_path, output_dir,
     return df
 
 
+def _native_imgsz(image_paths, default: int = 224) -> int:
+    """Native tile size (square tiles) for predict/val -- run at tile resolution, no resize.
+    Mirrors training.py, which sets imgsz from the tile width."""
+    for p in image_paths:
+        try:
+            return Image.open(p).width
+        except Exception:
+            continue
+    return default
+
+
 def augment_labels_with_model(tiled_dir, model_path, split: str = "train", conf: float = 0.4,
                               containment_thresh: float = 0.6, batch_size: int = 64,
-                              viz_dir=None, viz_n: int = 12, seed: int = 666):
+                              imgsz: int = None, viz_dir=None, viz_n: int = 12, seed: int = 666):
     """Add high-confidence model predictions as new burr labels (recover false
     negatives) for the given split — additions only, never removes labels.
 
@@ -956,6 +973,7 @@ def augment_labels_with_model(tiled_dir, model_path, split: str = "train", conf:
     stems = [Path(l.strip()).stem for l in (tiled_dir / f"{split}.txt").read_text().splitlines() if l.strip()]
     paths = [images_dir / f"{s}.jpg" for s in stems if (images_dir / f"{s}.jpg").exists()]
     model = YOLO(model_path)
+    imgsz = imgsz or _native_imgsz(paths)  # default native; augmentation may pass a higher imgsz for FN recall
 
     def xyxy(cx, cy, w, h):
         return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
@@ -974,7 +992,7 @@ def augment_labels_with_model(tiled_dir, model_path, split: str = "train", conf:
     changes = {}  # stem -> (original_boxes, added_boxes) for verification
     for start in range(0, len(paths), max(1, batch_size)):
         batch = paths[start:start + batch_size]
-        results = model.predict([str(p) for p in batch], conf=conf, verbose=False)
+        results = model.predict([str(p) for p in batch], conf=conf, imgsz=imgsz, verbose=False)
         for p, r in zip(batch, results):
             lf = labels_dir / f"{p.stem}.txt"
             orig = []
@@ -1018,11 +1036,27 @@ def augment_labels_with_model(tiled_dir, model_path, split: str = "train", conf:
                                                lw=1.0, edgecolor="red", facecolor="none"))
             for (x1, y1, x2, y2) in new_boxes:
                 ax.add_patch(patches.Rectangle((x1 * w, y1 * h), (x2 - x1) * w, (y2 - y1) * h,
-                                               lw=1.2, edgecolor="lime", facecolor="none"))
-            ax.set_title(f"{stem}\noriginal={len(existing)} (red)  added={len(new_boxes)} (lime)", fontsize=8)
+                                               lw=1.2, edgecolor="blue", facecolor="none"))
+            ax.set_title(f"{stem}\noriginal={len(existing)} (red)  added={len(new_boxes)} (blue)", fontsize=8)
             fig.savefig(viz_dir / f"{stem}.png", dpi=120, bbox_inches="tight")
             plt.close(fig)
 
+    # Sidecar manifest of added boxes: keeps labels 5-field/clean while making augmentation auditable + reversible.
+    man_path = None
+    if changes:
+        manifest = {
+            "model": Path(model_path).name, "conf": conf, "split": split,
+            "tiles_modified": modified, "boxes_added": added,
+            "added_per_tile": {
+                stem: {"n_original": len(orig),
+                       "added": [[round((x1 + x2) / 2, 6), round((y1 + y2) / 2, 6),
+                                  round(x2 - x1, 6), round(y2 - y1, 6)] for (x1, y1, x2, y2) in new]}
+                for stem, (orig, new) in changes.items()},
+        }
+        man_path = Path(tiled_dir) / f"augmentation_manifest_{split}.json"
+        man_path.write_text(json.dumps(manifest, indent=2))
+
     print(f"Augmented {split} labels (conf>={conf}): added {added} boxes across {modified} tiles"
+          f"{'; manifest -> ' + str(man_path) if man_path else ''}"
           f"{'; overlays -> ' + str(viz_dir) if viz_dir else ''}")
     return modified, added
