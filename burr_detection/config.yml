@@ -1,37 +1,37 @@
 # YOLO Burr Detection Configuration
 
-training_steps:
+training_steps:  # physical batch capped at 64 (avoids the GPU OOM/wedge); accumulate keeps effective batch
   - batch: 16
     accumulate: 1
-    max_epochs: 50
+    max_epochs: 100
     patience: 10
   - batch: 64
     accumulate: 1
-    max_epochs: 50
+    max_epochs: 100
     patience: 15
-  - batch: 256
-    accumulate: 1 
-    max_epochs: 50
-    patience: 20
-  - batch: 256
+  - batch: 64
     accumulate: 4
-    max_epochs: 50
+    max_epochs: 100
+    patience: 20
+  - batch: 64
+    accumulate: 16
+    max_epochs: 100
     patience: 25
   
-training_params: # or starting point for tuning 
-  - model_size: yolov8s.pt
+training_params: # best-known hparams for `--mode train`; seeds tuning trial 0 only if ray_tune.warm_start: true (off below)
+  - model_size: burr_detection/model_cfgs/yolo11m-p2.yaml
     optimizer: SGD
-    lr0: 0.007535468502919781
-    lrf: 0.006106862115975325
-    momentum: 0.860563804337033
-    weight_decay: 0.007999986538396332
-    box_gain: 7.5
-    cls_gain: 0.7502019533851836
-    dfl_gain: 1.6487943474402535
-    hsv_h: 0.0024535962939831795
-    hsv_s: 0.21180924495072723
-    hsv_v: 0.1921254122518909
-    degrees: 0.9028471314034809
+    lr0: 0.005
+    lrf: 0.0005
+    momentum: 0.9
+    weight_decay: 1e-5
+    box_gain: 10
+    cls_gain: 1.25
+    dfl_gain: 3.75
+    hsv_h: 0.003
+    hsv_s: 0.2
+    hsv_v: 0.175
+    degrees: 90
     scale: 0.5
     flipud: 0.5
 
@@ -42,6 +42,10 @@ score_weights:
   loss: 0.45
   f1: 0.35
   map50: 0.20
+
+# Fixed architecture knobs for the small/dense-object experiment (not tuned).
+warmstart: true   # for P2 (.yaml) model archs: load the matching pretrained .pt into the backbone before fine-tuning
+tal_topk: 13      # TAL assigner top-k (ultralytics default 10) -- more candidate positives per GT for dense small burrs
 
 # Progressive-step LR scaling:
 #   scaled_lr = min( min(lr0, max_lr0) * (eff_batch / ref)^power , max_scaled_lr )
@@ -58,15 +62,16 @@ analysis:
   top_n: 10
 
 tuning_space:
-  model_size: ["yolo11s.pt", "yolo11m.pt", "yolov8s.pt", "yolov8m.pt"]
+  model_size: ["yolov8s-p2.yaml", "yolov8m-p2.yaml",
+               "burr_detection/model_cfgs/yolo11s-p2.yaml", "burr_detection/model_cfgs/yolo11m-p2.yaml"]
   optimizer: ["AdamW", "SGD", "Adam"]
   lr0: {"loguniform": [0.0005, 0.01]}
   lrf: {"loguniform": [0.001, 0.1]} # fraction of initial lr (decays towards lrf*lr0)
   momentum: {"uniform": [0.85, 0.98]}
   weight_decay: {"loguniform": [0.0001, 0.01]}
-  box_gain: {"uniform": [4.0, 12.0]}     # spans the 7.5 default -- lets the search balance box vs cls/dfl
+  box_gain: {"uniform": [4.0, 16.0]}     # widened upper bound toward localization for small/dense burrs
   cls_gain: {"uniform": [0.5, 2.0]}
-  dfl_gain: {"uniform": [1.5, 3.0]}
+  dfl_gain: {"uniform": [1.5, 6.0]}      # widened toward sharper box-distribution localization
   hsv_h: {"uniform": [0.001, 0.005]}
   hsv_s: {"uniform": [0.1, 0.3]}
   hsv_v: {"uniform": [0.1, 0.25]}
@@ -76,7 +81,7 @@ tuning_space:
 
 ray_tune:
   num_samples: 150
-  max_concurrent_trials: 2
+  max_concurrent_trials: 1   # one trial at a time -- P2 + batch 64 needs ~12 GB; concurrency 2 OOMs yolo11m-p2 on 24 GB
   # Seed trial 0 with training_params (warm start). Turn on once you have a config that
   # fits the current search space; leave off to explore from scratch.
   warm_start: false
