@@ -138,9 +138,10 @@ chestnut-burr-detection-from-drone/
     ├── config.yml                      # Preprocess, training, tuning, and inference config
     ├── tests/                          # CPU-only unit checks (split, objective, tiling, ...)
     └── sample_data/
-        ├── training/inputs/            # Labeled sample tiles + YOLO-format labels
-        ├── training/outputs/           # Training and tuning run artifacts
-        └── inference/outputs/          # Inference run artifacts
+        ├── training/full_canopy/       # Source per-tree canopy images + polygon burr & canopy labels
+        ├── training/tiled/             # YOLO detection tiles (built from full_canopy by --mode preprocess)
+        ├── training/outputs/           # Training/tuning artifacts (created at runtime; not in download)
+        └── inference/outputs/          # Inference artifacts (created at runtime; not in download)
 ```
 
 ---
@@ -382,7 +383,7 @@ python -m burr_detection.detection `
 | `--data-root` | _(none)_ | Point the pipeline at your own dataset *without editing the committed config*; derives the `tiled/`, `full_canopy/`, `outputs/` layout (see below) |
 | `--plot-mode` | `subset` | `all` (every image), `subset` (15 random), `none` |
 
-**Typical workflow:** `preprocess` (build the tiled training set) → `tune` (search hyperparameters) → copy the best hyperparameters into `training_params` → `train` (final model) → `inference`. Once trained weights are published, `inference` can run standalone.
+**Typical workflow:** `preprocess` (build or split the tiled training set) → `tune` (search hyperparameters) → copy the best hyperparameters into `training_params` → `train` (final model) → `inference`. No trained weights ship with the sample data (withheld pending publication), so run `preprocess → tune → train` to produce a model; `inference` can then run standalone.
 
 ---
 
@@ -420,11 +421,11 @@ python -m burr_detection.detection --mode preprocess `
     --data-root "<data-root>" --plot-mode subset
 ```
 
-The committed `config.yml` points at the **bundled sample** under
-`burr_detection/sample_data/training/full_canopy/` (populated by the Google Drive download), so
-`--mode preprocess` with no `--data-root` tiles the sample into `…/training/tiled/`. `preprocess`
-always tiles from `full_canopy/` (there is no separate pre-cut-tiles input) and must run before
-`train`/`tune`. The full dataset is distributed via Google Drive, not committed to git.
+The bundled sample ships ready-to-train tiles in `…/training/tiled/`, plus the source images and
+polygon labels in `…/training/full_canopy/` for reference. With the committed config, `--mode
+preprocess` only builds the group-aware train/val/test split over those tiles — it does not re-tile.
+To tile your own data, pass a `full_canopy/` layout via `--data-root <root>`. The full dataset is
+distributed via Google Drive, not committed to git.
 
 You can also chain the whole pipeline in one command — `tune` hands its winning hyperparameters
 directly to `train`:
@@ -440,12 +441,14 @@ python -m burr_detection.detection --mode preprocess,tune,train,inference `
 
 Trains a YOLO model using **multi-step progressive gradient accumulation**, which simulates large effective batch sizes without exceeding GPU memory:
 
-| Step | Physical Batch | Accumulate | Effective Batch | Max Epochs | Patience | Layers Unfrozen |
-|------|---------------|------------|-----------------|------------|----------|-----------------|
-| 1 | 8 | 1 | 8 | 50 | 10 | Detection head (predictor) |
-| 2 | 8 | 4 | 32 | 50 | 15 | Full head (neck + predictor) |
-| 3 | 8 | 16 | 128 | 50 | 20 | Head + last ⅓ of backbone |
-| 4 | 8 | 64 | 512 | 50 | 25 | Full model |
+| Step | Layers Unfrozen |
+|------|-----------------|
+| 1 | Detection head (predictor) |
+| 2 | Full head (neck + predictor) |
+| 3 | Head + last ⅓ of backbone |
+| 4 | Full model |
+
+Per-step physical batch, gradient accumulation, max-epochs, and patience are set in `config.yml` (`training_steps`); physical batch is capped and accumulation reaches the large effective batches.
 
 The learning rate is scaled per step as `lr = min(lr0, max_lr0) × (effective_batch / 64)^0.5`, capped at `max_scaled_lr`. Progressive unfreezing is **architecture-aware** (read from the model YAML) and re-applied on the live trainer at the start of each step, so the curriculum actually takes effect. The best-epoch optimizer state is **carried across each step boundary** (momentum is preserved through the unfreeze), and the learning rate is **warmed up** over a few epochs at each transition. The best checkpoint across all steps/epochs is selected by a **composite objective** (validation loss + F1 + mAP50) and saved as `best_model_weights.pt`.
 
@@ -467,7 +470,7 @@ python -m burr_detection.detection --mode train `
 
 **Performance**
 
-The detector is **YOLOv8s** (the `training_params` default; the tuning search may also select `yolo11n/s` or `yolov8n`).
+The detector is **YOLOv8/YOLO11** (small & medium); the tuning search explores each model with a baseline (stride-8) and a **P2 (stride-4) head** for small-object detection — see `tuning_space.model_size` in `config.yml`.
 
 > The figures below are from the **prior production model**; metrics will change after re-tuning/training on the current (group-split, augmented) dataset.
 
@@ -504,7 +507,7 @@ The detector is **YOLOv8s** (the `training_params` default; the tuning search ma
 
 Searches the hyperparameter space using **Ray Tune with Optuna (Bayesian) search** and ASHA early stopping:
 
-- Default: 50 trials, up to 2 concurrent
+- Trial count and concurrency are set in `config.yml` (`ray_tune.num_samples`, `max_concurrent_trials`)
 - ASHA scheduler prunes underperforming trials, with a grace window across each progressive-unfreeze step transition so a recovering trial isn't pruned on the transition spike
 - Optimization metric (scheduling **and** best-model selection): a **composite objective** = validation loss + (1−F1) + (1−mAP50), chosen so that tuning the box/cls/dfl loss gains does not confound the objective
 - NaN/inf losses are replaced with a sentinel value (a degenerate trial is pruned, not crashed)
@@ -518,21 +521,7 @@ python -m burr_detection.detection --mode tune `
 
 **Tuning space** (from `burr_detection/config.yml`):
 
-| Parameter | Range | Distribution |
-|-----------|-------|-------------|
-| `model_size` | yolo11n, yolo11s, yolov8n, yolov8s | choice |
-| `imgsz` | 224, 320, 416 | choice |
-| `optimizer` | AdamW, SGD, Adam | choice |
-| `lr0` | [0.0005, 0.01] | log-uniform |
-| `lrf` | [0.001, 0.1] | log-uniform |
-| `momentum` | [0.85, 0.98] | uniform |
-| `weight_decay` | [0.0001, 0.01] | log-uniform |
-| `warmup_epochs` | 2, 3, 4, 5 | choice |
-| `box_gain` | [12.0, 20.0] | uniform |
-| `cls_gain` | [0.5, 2.0] | uniform |
-| `dfl_gain` | [1.5, 3.0] | uniform |
-| `dropout` | [0.0, 0.2] | uniform |
-| augmentation params (hsv_h/s/v, degrees, scale, shear, mosaic, mixup, copy_paste, perspective) | see config | uniform |
+The search covers `model_size` (the four models × baseline/P2 stride variants), `optimizer`, learning rate (`lr0`/`lrf`), `momentum`, `weight_decay`, the localization loss gains (`box_gain`/`dfl_gain`), and augmentation (`hsv_*`, `degrees`, `scale`, `flipud`). See `tuning_space` in `config.yml` for the exact set and ranges.
 
 **Outputs** — written to `burr_detection/sample_data/training/outputs/tuning_<timestamp>/`:
 
@@ -540,10 +529,12 @@ python -m burr_detection.detection --mode tune `
 |------|-------------|
 | `best_<model>_model.pt` | Best model weights |
 | `best_trial_config.json` | Hyperparameters for the best trial |
-| `all_tuning_history.csv` | Metrics for all 50 trials |
+| `all_tuning_history.csv` | Metrics for all trials |
 | `best_trial_training_history.csv` | Per-epoch metrics for the best trial |
 | `test_results.csv` | Test set evaluation of best model |
 | `prediction_plots/` | Prediction visualizations |
+
+Each tuning run also appends one row to `model_registry.csv` at the `outputs/` root — a cross-run index of every winner (run, model, composite objective, key metrics, and paths to its weights + config). Sort by `objective` (lower is better) to find the best run; promotion into `config.yml` (`training_params`) stays a manual copy.
 
 Tuning checkpoints per-epoch to `<trial_dir>/checkpoint_<epoch>/` (model weights + state), allowing trials to resume after interruption. Hyperparameter-importance and top-trial curves (`hp_importance.png`, `top_trial_curves.png`, `trial_summary.csv`) are written to the Ray experiment directory at the end of the run.
 
