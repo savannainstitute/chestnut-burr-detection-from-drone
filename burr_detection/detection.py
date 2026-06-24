@@ -32,7 +32,9 @@ def run_training(args, config: Dict, run_dir, override_params=None):
         model_size=params['model_size'],
         prints_per_epoch=5,
         training_steps=config['training_steps'],
-        score_weights=config.get('score_weights')
+        score_weights=config.get('score_weights'),
+        warmstart=config.get('warmstart', False),
+        tal_topk=config.get('tal_topk')
     )
 
     trainer.train(
@@ -68,7 +70,12 @@ def run_tuning(args, config: Dict, run_dir):
         score_weights=config.get('score_weights'),
         analysis_enabled=config.get('analysis', {}).get('enabled', True),
         analysis_top_n=config.get('analysis', {}).get('top_n', 10),
-        outputs_dir=str(Path(run_dir) / "tune")
+        outputs_dir=str(Path(run_dir) / "tune"),
+        warmstart=config.get('warmstart', False),
+        tal_topk=config.get('tal_topk'),
+        # Cross-run winner index at the dataset's outputs/ root (accumulates over runs).
+        registry_path=str(Path(config['data'].get(
+            'outputs_dir', 'burr_detection/sample_data/training/outputs')) / 'model_registry.csv')
     )
 
     tuner.run()
