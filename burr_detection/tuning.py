@@ -4,6 +4,7 @@ Uses Ray Tune with Optuna search for hyperparameter optimization
 """
 import os
 import sys
+import csv
 import tempfile
 import pickle
 from pathlib import Path
@@ -42,7 +43,10 @@ class YOLOTuner:
         score_weights=None,
         analysis_enabled=True,
         analysis_top_n=10,
-        outputs_dir="burr_detection/sample_data/training/outputs"
+        outputs_dir="burr_detection/sample_data/training/outputs",
+        warmstart=False,
+        tal_topk=None,
+        registry_path=None
     ):
         self.num_samples = num_samples
         self.max_concurrent_trials = max_concurrent_trials
@@ -57,6 +61,9 @@ class YOLOTuner:
         self.analysis_enabled = analysis_enabled
         self.analysis_top_n = analysis_top_n
         self.outputs_dir = outputs_dir
+        self.warmstart = warmstart
+        self.tal_topk = tal_topk
+        self.registry_path = registry_path
 
         self.results = None
         self.best_trial = None
@@ -186,7 +193,9 @@ class YOLOTuner:
             model_size=config["model_size"],
             prints_per_epoch=5,
             ray_tune_callback=ray_tune_callback,
-            training_steps=self.training_steps
+            training_steps=self.training_steps,
+            warmstart=self.warmstart,
+            tal_topk=self.tal_topk
         )
 
         if checkpoint:
@@ -243,7 +252,7 @@ class YOLOTuner:
 
         asha_scheduler = ASHAScheduler(
             time_attr="training_iteration",
-            max_t=100,
+            max_t=400,  # 4 steps x up to 100 epochs -- span the longer runs so pruning brackets stay meaningful
             grace_period=10,
             reduction_factor=3
         )
@@ -363,6 +372,8 @@ class YOLOTuner:
                 "output_dir": str(self.best_output_dir)
             }
 
+            self._append_model_registry(best_obj_row, model_size)
+
             yolo_data_dir = cast(str, self.yolo_data_dir)  # always set for a real tuning run
             dataset_yaml = Path(yolo_data_dir) / "dataset.yml"
             if dataset_yaml.exists():
@@ -400,3 +411,48 @@ class YOLOTuner:
             print(f"Error in post-processing best trial: {e}")
             self.best_trial = None
             self.best_trial_preds = None
+
+    def _append_model_registry(self, best_obj_row, model_size):
+        """Append one row to a cross-run model registry CSV: a stable, sortable index
+        of every tuning winner (run, model, score, key metrics, weights path).
+
+        Accumulates across runs at registry_path (the dataset's outputs/ root). Never
+        raises -- a registry write must not abort an otherwise-finished tuning run.
+        """
+        if not self.registry_path:
+            return
+        try:
+            cfg = self.best_trial_config or {}
+            run_id = Path(self.outputs_dir).parent.name  # run_<ts>
+            row = {
+                "run_id": run_id,
+                "model_size": model_size,
+                "objective": round(float(best_obj_row.get("objective", float("nan"))), 6),
+                "val_f1": round(float(best_obj_row.get("val_f1", 0.0)), 6),
+                "val_mAP50": round(float(best_obj_row.get("val_mAP50", 0.0)), 6),
+                "val_precision": round(float(best_obj_row.get("val_precision", 0.0)), 6),
+                "val_recall": round(float(best_obj_row.get("val_recall", 0.0)), 6),
+                "val_loss": round(float(best_obj_row.get("val_loss", 0.0)), 6),
+                "best_epoch": int(best_obj_row.get("epoch", 0)),
+                "num_trials": self.num_samples,
+                "optimizer": cfg.get("optimizer", ""),
+                "lr0": cfg.get("lr0", ""),
+                "lrf": cfg.get("lrf", ""),
+                "box_gain": cfg.get("box_gain", ""),
+                "dfl_gain": cfg.get("dfl_gain", ""),
+                "model_path": str(self.best_model_path),
+                "config_json": str(Path(self.best_output_dir) / "best_trial_config.json"),
+                "tune_dir": str(self.best_output_dir),
+            }
+            registry = Path(self.registry_path)
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            write_header = not registry.exists()
+            with open(registry, "a", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+                if write_header:
+                    writer.writeheader()
+                writer.writerow(row)
+            print(f"Model registry updated -> {registry} (run {run_id}, "
+                  f"objective={row['objective']}, model={model_size})")
+        except Exception as e:
+            print(f"Model registry update skipped: {e}")
