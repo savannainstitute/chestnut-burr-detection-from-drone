@@ -12,6 +12,7 @@ import time
 import shutil
 import json
 import random
+import types
 from typing import cast
 from collections.abc import Iterable
 
@@ -27,6 +28,27 @@ from burr_detection.training import YOLOTrainer
 from burr_detection.utils import (set_seed, is_notebook, convert_tuning_space, get_output_dir,
                                   evaluate_test_set, plot_ground_truth_vs_predictions,
                                   compute_composite_objective, analyze_ray_results)
+
+
+def _should_report_on_new_result(self, trials, done=False):
+    """Gate the status block on new results instead of Ray's wall-clock timer.
+
+    The stock reporter prints every ``max_report_frequency`` seconds, so its
+    table interleaves with YOLO's per-batch prints. Each trial calls tune.report
+    exactly once per epoch, so reporting only when the summed training_iteration
+    across trials advances yields one status block per epoch and none mid-epoch.
+    Bound onto the reporter instance, so it applies to whichever (CLI or Jupyter)
+    reporter is in use.
+    """
+    total_iters = sum(
+        int((t.last_result or {}).get("training_iteration", 0) or 0)
+        for t in trials
+    )
+    if done or total_iters > getattr(self, "_last_total_iters", -1):
+        self._last_total_iters = total_iters
+        return True
+    return False
+
 
 class YOLOTuner:
     def __init__(
@@ -287,6 +309,9 @@ class YOLOTuner:
                 max_column_length=40,
                 sort_by_metric=True
             )
+        # Report once per epoch (on a new result), not on Ray's wall-clock timer,
+        # so the status block doesn't interleave with YOLO's per-batch prints.
+        reporter.should_report = types.MethodType(_should_report_on_new_result, reporter)
 
         max_concurrent = self.max_concurrent_trials
         available_gpus = torch.cuda.device_count()
