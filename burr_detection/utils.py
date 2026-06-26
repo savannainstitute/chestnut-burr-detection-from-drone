@@ -387,6 +387,15 @@ def compute_composite_objective(val_loss, f1, map50, score_weights):
     )
 
 
+def pick_device():
+    """cuda (Win/Linux NVIDIA) -> mps (Apple Silicon) -> cpu, by what's actually available."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 def set_seed(seed):
     """Set random seed for reproducibility"""
     random.seed(seed)

@@ -27,7 +27,7 @@ from ultralytics import YOLO
 from burr_detection.training import YOLOTrainer
 from burr_detection.utils import (set_seed, is_notebook, convert_tuning_space, get_output_dir,
                                   evaluate_test_set, plot_ground_truth_vs_predictions,
-                                  compute_composite_objective, analyze_ray_results)
+                                  compute_composite_objective, analyze_ray_results, pick_device)
 
 
 def _should_report_on_trial_start(self, trials, done=False):
@@ -370,7 +370,8 @@ class YOLOTuner:
         else:
             cpus_per_trial = max(1, available_cpus // max_concurrent)
             resources = {"cpu": float(cpus_per_trial)}
-            print("WARNING: CUDA not available. Tuning with CPU only.")
+            if pick_device() == "cpu":  # MPS lands here too, but trains on GPU -- only warn on real CPU-only
+                print("GPU not available. Tuning with CPU only.")
 
         tuner = tune.Tuner(
             tune.with_resources(self.train_yolo_with_ray, resources=resources),

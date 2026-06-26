@@ -19,7 +19,7 @@ from ultralytics import YOLO
 
 from burr_detection.utils import (SmoothedValue, MetricLogger, set_seed, evaluate_test_set,
                                   plot_ground_truth_vs_predictions, get_output_dir,
-                                  compute_composite_objective)
+                                  compute_composite_objective, pick_device)
 
 
 def set_trainable_layers(model, num_layers, runtime_model=None):
@@ -178,9 +178,9 @@ class YOLOTrainer:
         self.imgsz = _PILImage.open(_tiles[0]).width if _tiles else 224
         print(f"imgsz = {self.imgsz} (native tile size, no resize)")
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = pick_device()
         if device == "cpu":
-            print(f"CUDA not available, using CPU for training")
+            print("No GPU (CUDA/MPS) available, using CPU for training")
 
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -612,9 +612,11 @@ class YOLOTrainer:
             eta_seconds = self.iter_time.global_avg * remaining_batches
             eta_string = str(timedelta(seconds=int(eta_seconds)))
             gpu_mem = ''
+            MB = 1024.0 * 1024.0
             if torch.cuda.is_available():
-                MB = 1024.0 * 1024.0
                 gpu_mem = f"max mem: {torch.cuda.max_memory_allocated() / MB:.0f}M"
+            elif torch.backends.mps.is_available():
+                gpu_mem = f"mem: {torch.mps.current_allocated_memory() / MB:.0f}M"  # mps has no max-allocated tracking
             header = f'Epoch: [{self.current_epoch}/{self.epochs}] Training'
             progress = f'[{self.batch_idx}/{total_batches}]'
             old_stdout, old_stderr = sys.stdout, sys.stderr
