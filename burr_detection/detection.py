@@ -14,11 +14,8 @@ from burr_detection.utils import load_config, plot_dataset_samples, get_output_d
         
 
 def run_training(args, config: Dict, run_dir, override_params=None):
-    """Train model using best known hyperparameters from config.
-
-    If override_params is given (e.g. the winning hyperparameters from a preceding
-    `tune` step in a chained run), they are used instead of config['training_params'][0].
-    """
+    """Train using config's training_params[0], or override_params (e.g. a preceding tune step's
+    winner in a chained run) when given."""
     print("\n" + "="*80)
     print("Training with Best Known Hyperparameters")
     print("="*80)
@@ -120,19 +117,16 @@ def run_inference(args, config: Dict, run_dir):
 
 
 def run_preprocess(args, config: Dict, run_dir):
-    """Build/refresh the tiled training set, then save QA overlays + optional augmentation.
+    """Build/refresh the tiled training set and save QA overlays.
 
-    If data.full_res_images_dir + polygon_labels_dir are set (e.g. via --data-root), runs the
-    in-module polygon tiler (canopy mask -> tile -> clip polygons to bboxes -> quality
-    filters -> group-aware split). Otherwise -- the bundled sample case -- splits the pre-made
-    cleaned tiles already in training_dir. Then saves QA sample overlays and, if data.audit_model
-    is set, augments labels with the model's high-confidence predictions to recover missed burrs.
+    With data.full_res_images_dir + polygon_labels_dir set (e.g. via --data-root), runs the
+    polygon tiler (canopy mask -> tile -> clip polygons to bboxes -> quality filters ->
+    group-aware split); otherwise splits the pre-made tiles already in training_dir.
     """
     from burr_detection.dataset import create_tiled_dataset, prepare_dataset_splits, burr_tile_group_key
-    from burr_detection.utils import augment_labels_with_model
 
     print("\n" + "="*80)
-    print("Preprocessing: tile (optional) + group-aware split + label augmentation + QA")
+    print("Preprocessing: tile (optional) + group-aware split + QA")
     print("="*80)
 
     data = config['data']
@@ -183,19 +177,6 @@ def run_preprocess(args, config: Dict, run_dir):
             num_samples=num_samples, seed=seed, class_names={0: 'Chestnut-burr'},
         )
 
-    audit_model = data.get('audit_model')
-    if audit_model and Path(audit_model).exists():
-        aug_conf = data.get('augment_conf', 0.4)
-        print(f"\nAugmenting labels with {Path(audit_model).name} (conf>={aug_conf}, "
-              f"containment-deduped) to recover missed burrs across all splits...")
-        for split in ('train', 'val', 'test'):
-            augment_labels_with_model(
-                tiled_dir=training_dir, model_path=audit_model, split=split,
-                conf=aug_conf, viz_dir=out_dir / f"augment_{split}", viz_n=6,
-            )
-    else:
-        print("\nNo data.audit_model set; skipping label augmentation.")
-
     print(f"\nPreprocess reports -> {out_dir}")
 
 
@@ -206,7 +187,6 @@ def _apply_data_root(config, data_root):
       <root>/tiled                              -> training_dir
       <root>/outputs                            -> outputs_dir
       <root>/full_canopy/{images,labels,canopy} -> tiling source
-      <root>/reference/best_tuned_yolov8s.pt    -> audit/augmentation model (if present)
     """
     root = Path(data_root)
     d = config.setdefault('data', {})
@@ -215,9 +195,6 @@ def _apply_data_root(config, data_root):
     d['full_res_images_dir'] = str(root / 'full_canopy' / 'images')
     d['polygon_labels_dir'] = str(root / 'full_canopy' / 'labels')
     d['canopy_labels_dir'] = str(root / 'full_canopy' / 'canopy')
-    model = root / 'reference' / 'best_tuned_yolov8s.pt'
-    if model.exists():
-        d['audit_model'] = str(model)
     print(f"Using --data-root {root} (training_dir={d['training_dir']})")
     return config
 
@@ -274,8 +251,8 @@ Examples:
         '--data-root',
         type=str,
         default=None,
-        help='Root of your dataset; derives tiled/, full_canopy/, outputs/ and the reference '
-             'model, overriding the sample paths. Unset = use sample data.'
+        help='Root of your dataset; derives tiled/, full_canopy/ and outputs/, overriding the '
+             'sample paths. Unset = use sample data.'
     )
 
     args = parser.parse_args()
