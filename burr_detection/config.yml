@@ -106,9 +106,6 @@ data:
   full_res_images_dir: null
   polygon_labels_dir: null
   canopy_labels_dir: null
-  # Model for false-negative label augmentation (null = skip; set via --data-root or here).
-  audit_model: null
-  augment_conf: 0.4
   tiling:
     tile_size: 224          # match inference CanopyTiler
     overlap: 0.2
