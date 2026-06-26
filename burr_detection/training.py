@@ -23,17 +23,12 @@ from burr_detection.utils import (SmoothedValue, MetricLogger, set_seed, evaluat
 
 
 def set_trainable_layers(model, num_layers, runtime_model=None):
-    """Stage-based unfreezing using architecture-aware backbone/head partitions.
+    """Progressive stage-based unfreezing from the model YAML backbone/head split:
+    1 = predictor only, 2 = full head, 3 = head + last third of backbone, 4+ = full model.
 
-    Reads the model YAML backbone/head split to locate the head, then unfreezes
-    progressively by stage:
-      1 = predictor block only, 2 = full head, 3 = head + last third of backbone,
-      4+ = full model.
-
-    When ``runtime_model`` is provided (the live ``trainer.model``), the freeze is
-    also applied there. This is required: Ultralytics re-enables requires_grad on
-    user-frozen params during train setup, so a freeze applied to the YOLO wrapper
-    before .train() does not stick on the running model. Returns a stats dict.
+    Pass runtime_model (the live trainer.model) to also freeze there -- required because
+    Ultralytics re-enables requires_grad on user-frozen params during train setup, so a freeze
+    on the wrapper before .train() doesn't stick. Returns a stats dict.
     """
     stage = max(1, int(num_layers))
 
@@ -46,8 +41,7 @@ def set_trainable_layers(model, num_layers, runtime_model=None):
                 return int(len(bb))
             if len(hd) > 0 and len(hd) <= n_blocks:
                 return int(max(0, n_blocks - len(hd)))
-        # Fallback: treat the last 3 blocks as the head when the yaml partition
-        # is unavailable.
+        # Fallback when the yaml partition is unavailable: treat the last 3 blocks as the head.
         return int(max(0, n_blocks - min(3, n_blocks)))
 
     def _apply_to_core(core_model, stage_idx):
@@ -136,9 +130,8 @@ class YOLOTrainer:
         logging.getLogger("ultralytics").setLevel(logging.WARNING)
 
     def _create_model(self, model_size, warmstart):
-        """Build the YOLO model. For a .yaml architecture (the P2 variants) with warmstart,
-        load the matching pretrained .pt -- transfers the backbone + matching layers; the new
-        (P2) head stays randomly initialized and is learned during fine-tuning."""
+        """Build the YOLO model; for a .yaml arch with warmstart, load the matching pretrained .pt
+        to transfer the backbone (the new P2 head stays random and is learned during fine-tuning)."""
         model = YOLO(model_size)
         if warmstart and str(model_size).endswith(".yaml"):
             base = Path(model_size).stem.replace("-p2", "").replace("-p6", "")
@@ -151,7 +144,7 @@ class YOLOTrainer:
 
     def _override_tal_topk(self, tal_topk):
         """Fix the TAL assigner top-k via a contained, instance-level init_criterion override
-        (NOT a global monkeypatch). Pinned to ultralytics v8DetectionLoss(model, tal_topk=...)."""
+        (not a global monkeypatch). Pinned to ultralytics v8DetectionLoss(model, tal_topk=...)."""
         from ultralytics.utils.loss import v8DetectionLoss
         core = self.model.model
         core.init_criterion = lambda: v8DetectionLoss(core, tal_topk=int(tal_topk))
@@ -178,8 +171,7 @@ class YOLOTrainer:
 
         self.yaml_path = yaml_path
 
-        # imgsz inherits the tile size produced by the CanopyTiler (square tiles), so the
-        # model always trains at native resolution -- no up/downscaling of the tiles.
+        # imgsz = the tile size, so the model trains at native resolution (no resize).
         from PIL import Image as _PILImage
         _tiles = sorted((Path(yolo_data_dir) / "images").glob("*.jpg")) or \
                  sorted((Path(yolo_data_dir) / "images").glob("*.png"))
@@ -222,15 +214,9 @@ class YOLOTrainer:
         self._pending_handoff_snapshot = None
         self._pending_model_handoff_state = None
         self.metrics_history = []
-        # Direct training saves per-epoch checkpoints (epoch{N}.pt) and reads them
-        # below for best-epoch selection. During tuning we turn Ultralytics
-        # checkpointing off entirely (save=False): it then writes last.pt only once,
-        # on the final epoch, instead of overwriting last.pt/best.pt every epoch --
-        # that repeated overwrite is what raced Windows Defender's on-access scan and
-        # killed trials. The Ray checkpoints carry the model for resume + final
-        # selection, and the progressive step handoff carries the best-objective
-        # weights in-memory (see _on_fit_epoch_end), so nothing here needs the
-        # per-epoch saves.
+        # Direct training saves per-epoch checkpoints for best-epoch selection below. During
+        # tuning, save=False: the per-epoch last.pt/best.pt overwrite raced Windows Defender and
+        # killed trials -- the Ray checkpoints + in-memory step handoff carry the model instead.
         save = self.ray_tune_callback is None
         save_period = 1 if save else -1
         print("\n" + "-" * 80)
@@ -255,22 +241,12 @@ class YOLOTrainer:
             else:
                 epochs_to_run = step["max_epochs"]
             self.epochs = epochs_to_run
-            # Start this step from the previous step's BEST-objective epoch, not its
-            # last epoch -- with lenient early-stopping patience the run continues
-            # well past the best, so handing off the last epoch would throw away the
-            # gains. "Best" is the project's composite objective (the same metric
-            # used for final selection), snapshotted in-memory at that epoch (see
-            # _on_fit_epoch_end) for both direct training and tuning, then loaded into
-            # the existing (correct-nc) wrapper. reset_callbacks() below keeps the
-            # re-added per-step callbacks from stacking on the reused wrapper.
+            # Start this step from the previous step's best-objective epoch (snapshotted in
+            # _on_fit_epoch_end), not its last -- lenient patience runs well past the best.
             if self._pending_model_handoff_state is not None:
                 cast("torch.nn.Module", self.model.model).load_state_dict(self._pending_model_handoff_state)
-                # Ultralytics strips overrides['model'] after each .train() (keeps only
-                # imgsz/data/task/single_cls), so restore it before re-training this
-                # reused wrapper -- model.py builds the train args via
-                # self.overrides['model'] and would otherwise raise KeyError: 'model'.
-                # The actual weights still come from this wrapper (get_model(weights=
-                # self.model)); this value is just the model identifier.
+                # Ultralytics strips overrides['model'] after each .train(); restore it or the
+                # next train() build raises KeyError: 'model'. Weights still come from the wrapper.
                 self.model.overrides["model"] = self.model_size
             self.current_step = step_idx + 1
             self.current_step_patience = step["patience"]
@@ -447,16 +423,9 @@ class YOLOTrainer:
         self.iter_time = SmoothedValue(fmt='{avg:.4f}')
 
     def _on_train_start(self, trainer):
-        """Re-apply the staged freeze on the live trainer model, restore the previous
-        step's best-epoch optimizer state, and arm the manual learning-rate warmup.
-
-        Ultralytics re-enables requires_grad=True on user-frozen params during train
-        setup, so a freeze applied before .train() does not stick; re-applying here
-        (after that re-enable) makes the progressive-unfreeze curriculum effective.
-        The best-epoch optimizer state is carried across the unfreeze boundary so the
-        params already training keep their momentum, and the LR is warmed up from the
-        handed-off value to this step's target.
-        """
+        """Re-apply the staged freeze on the live trainer model (Ultralytics re-enables
+        requires_grad during setup, so the pre-.train() freeze doesn't stick), restore the
+        previous step's best-epoch optimizer state, and arm the manual LR warmup."""
         stage = int(getattr(self, "current_step", 1))
         stats = set_trainable_layers(self.model, num_layers=stage, runtime_model=trainer.model)
         old_stdout, old_stderr = sys.stdout, sys.stderr
@@ -487,11 +456,8 @@ class YOLOTrainer:
             sys.stdout, sys.stderr = old_stdout, old_stderr
 
     def _on_train_end(self, trainer):
-        """Write last.pt if missing, so Ultralytics' post-train reload doesn't crash.
-
-        With save=False, Ultralytics only writes last.pt on the final epoch, so an
-        early stop before then leaves none for the reload to load.
-        """
+        """Write last.pt if missing so Ultralytics' post-train reload doesn't crash (with
+        save=False it only writes last.pt on the final epoch, which an early stop skips)."""
         try:
             last_path = getattr(trainer, "last", None)
             if last_path is not None and not Path(last_path).exists():
@@ -532,11 +498,8 @@ class YOLOTrainer:
             if isinstance(snapshot, dict):
                 self._current_step_best_objective = float(objective)
                 self._current_step_best_snapshot = snapshot
-                # Carry the best-objective epoch's weights to the next progressive
-                # step in-memory, paired with the optimizer snapshot above from this
-                # same epoch. Used for the step handoff in both direct training and
-                # tuning so the next step resumes from the best epoch, not the last
-                # (they diverge under lenient early-stopping patience).
+                # Carry this epoch's weights (paired with the optimizer snapshot) for the
+                # next step's handoff, so it resumes from the best epoch, not the last.
                 model = getattr(trainer, "model", None)
                 if model is not None:
                     self._current_step_best_model_state = {
