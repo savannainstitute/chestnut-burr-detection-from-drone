@@ -317,9 +317,10 @@ class YOLOTuner:
         def trial_dirname_creator(trial):
             return f"trial_{trial.trial_id}"
 
+        max_t = sum(step["max_epochs"] for step in self.training_steps)
         asha_scheduler = ASHAScheduler(
             time_attr="training_iteration",
-            max_t=400,  # 4 steps x up to 100 epochs -- span the longer runs so pruning brackets stay meaningful
+            max_t=max_t,
             grace_period=10,
             reduction_factor=3
         )
