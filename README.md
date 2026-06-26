@@ -134,7 +134,7 @@ chestnut-burr-detection-from-drone/
     ├── tuning.py                       # Ray Tune + Optuna hyperparameter search
     ├── inference.py                    # Tile-and-detect inference pipeline
     ├── dataset.py                      # Group-aware splitting, canopy tiling, polygon tiler
-    ├── utils.py                        # NMS, evaluation, plotting, metrics, label augmentation
+    ├── utils.py                        # NMS, evaluation, plotting, metrics
     ├── config.yml                      # Preprocess, training, tuning, and inference config
     ├── tests/                          # CPU-only unit checks (split, objective, tiling, ...)
     └── sample_data/
@@ -397,10 +397,7 @@ full-resolution per-tree canopy images plus **polygon** (segmentation) burr labe
 2. De-duplicates overlapping (double-annotated) boxes.
 3. Creates a **group-aware** train/val/test split (70/20/10) where all tiles cut from one source tree
    stay in the same split — preventing the tree-level leakage a plain per-tile shuffle would cause.
-4. Optionally **augments** labels with high-confidence predictions from a reference model
-   (`data.audit_model`) to recover missed burrs (false negatives), de-duplicated by containment so a
-   tighter model box inside a loose human box is not added twice.
-5. Saves QA overlays so you can confirm labels align with the imagery.
+4. Saves QA overlays so you can confirm labels align with the imagery.
 
 > **Where the data comes from:** Steps 1–3 produce the per-tree canopy *images*, and the canopy polygon comes from segmentation (Step 2) — but the **burr polygon labels are not produced by the pipeline.** You create them by hand-annotating the canopy images (e.g., in Roboflow), since the detector learns from human-drawn labels.
 
@@ -412,7 +409,6 @@ Expected dataset layout (produced by your annotation/export step; pass its root 
 │   ├── images/    # full-resolution per-tree canopy images
 │   ├── labels/    # YOLO-segment polygon burr labels (one .txt per image)
 │   └── canopy/    # YOLO-segment canopy polygon per image (used for masking)
-├── reference/best_tuned_*.pt        # optional: model used for label augmentation
 └── tiled/                           # written by --mode preprocess (the training set)
 ```
 
