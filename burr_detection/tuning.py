@@ -41,6 +41,27 @@ def _should_report_on_trial_start(self, trials, done=False):
     return False
 
 
+def _format_best_result_chunk(trial_name, m):
+    """Compact one-per-trial summary of a trial's best epoch (lowest composite objective),
+    printed at completion in place of Ray's per-epoch result dump (which we silence via
+    verbose=1). `m` is the best-epoch metrics snapshot."""
+    def g(k):
+        return m.get(k, 0.0)
+    return "\n".join([
+        "=" * 80,
+        f"Best result for {trial_name} -- epoch {int(g('epoch'))} (step {int(g('step'))}) "
+        f"| model {m.get('model', '?')}",
+        f"  objective    : {g('objective'):.6g}  (best {m.get('objective_best', g('objective')):.6g})",
+        f"  val_loss     : {g('val_loss'):.4f}   box {g('val_box_loss'):.4f}  "
+        f"cls {g('val_cls_loss'):.4f}  dfl {g('val_dfl_loss'):.4f}",
+        f"  val_metrics  : precision {g('val_precision'):.4f}  recall {g('val_recall'):.4f}  "
+        f"f1 {g('val_f1'):.4f}  mAP50 {g('val_mAP50'):.4f}  fitness {g('val_fitness'):.4f}",
+        f"  train_loss   : {g('train_loss'):.4f}   box {g('train_box_loss'):.4f}  "
+        f"cls {g('train_cls_loss'):.4f}  dfl {g('train_dfl_loss'):.4f}   lr {g('lr'):.3e}",
+        "=" * 80,
+    ])
+
+
 class YOLOTuner:
     def __init__(
         self,
@@ -140,6 +161,7 @@ class YOLOTuner:
             total_epochs = getattr(trainer, 'total_epochs_so_far', 0) + step_epoch
 
             report_metrics = {
+                'model': Path(config['model_size']).name,  # basename for a readable table column
                 'training_iteration': total_epochs,
                 'step': current_step,
                 'epoch': metrics['epoch'] if 'epoch' in metrics else total_epochs,
@@ -177,15 +199,8 @@ class YOLOTuner:
             # terminal report. Per-epoch rows keep current metrics for the live reporter.
             if report_metrics['objective'] < objective_best_so_far:
                 objective_best_so_far = report_metrics['objective']
-                best_metrics = {
-                    'epoch': report_metrics['epoch'],
-                    'val_loss': report_metrics['val_loss'],
-                    'val_precision': report_metrics['val_precision'],
-                    'val_recall': report_metrics['val_recall'],
-                    'val_f1': report_metrics['val_f1'],
-                    'val_mAP50': report_metrics['val_mAP50'],
-                    'step': report_metrics['step'],
-                }
+                best_metrics = dict(report_metrics)  # full snapshot of the best epoch
+                best_metrics['objective_best'] = objective_best_so_far
             report_metrics['objective_best'] = objective_best_so_far
 
             checkpoint_data = {
@@ -226,33 +241,43 @@ class YOLOTuner:
             tal_topk=self.tal_topk
         )
 
-        if checkpoint:
-            self._resume_training(
-                trainer, self.yolo_data_dir, config, start_step,
-                step_epochs_completed, total_epochs_so_far, yolo_checkpoint_path,
-                ray_tune_callback, output_dir
-            )
-        else:
-            trainer.train(self.yolo_data_dir, config=config, output_dir=output_dir)
+        # Wrap training so the best-epoch chunk prints once at the end of EVERY trial. ASHA
+        # prunes by raising sys.exit(0) inside tune.report() (SystemExit); it propagates up
+        # through ultralytics (whose handlers are all `except Exception`) and still runs `finally`.
+        try:
+            if checkpoint:
+                self._resume_training(
+                    trainer, self.yolo_data_dir, config, start_step,
+                    step_epochs_completed, total_epochs_so_far, yolo_checkpoint_path,
+                    ray_tune_callback, output_dir
+                )
+            else:
+                trainer.train(self.yolo_data_dir, config=config, output_dir=output_dir)
 
-        # Terminal report: flip a completed trial's reporter row to its best epoch. No
-        # checkpoint (don't shadow the selection checkpoint); training_iteration held so the
-        # epoch-sync reporter gate's running sum doesn't drop at termination.
-        if best_metrics:
-            try:
-                final_iter = getattr(trainer, 'total_epochs_so_far', 0) + getattr(trainer, 'current_epoch', 0)
-                tune.report({
-                    **best_metrics,
-                    'objective': objective_best_so_far,
-                    'objective_best': objective_best_so_far,
-                    'training_iteration': final_iter,
-                })
-            except Exception:
-                pass
+            # Terminal report (normal completion only): flip the reporter row to the best epoch.
+            # No checkpoint (don't shadow the selection checkpoint); training_iteration held so the
+            # epoch-sync reporter gate's running sum doesn't drop at termination. On a prune the
+            # session is already exiting, so this is skipped -- the pruned row keeps its last epoch.
+            if best_metrics:
+                try:
+                    final_iter = getattr(trainer, 'total_epochs_so_far', 0) + getattr(trainer, 'current_epoch', 0)
+                    tune.report({
+                        **best_metrics,
+                        'objective': objective_best_so_far,
+                        'objective_best': objective_best_so_far,
+                        'training_iteration': final_iter,
+                    })
+                except Exception:
+                    pass
+        finally:
+            # One result chunk per trial on the best epoch (not the last) -- runs whether the
+            # trial completed or was pruned (the pruning SystemExit still triggers this).
+            if best_metrics:
+                print(_format_best_result_chunk(trial_dir.name, best_metrics))
 
-        # The stable Ultralytics work dir is intermediate only (the model for resume
-        # and final selection rides the Ray checkpoints), so drop it on completion to
-        # bound disk growth. Pruned/errored trials keep theirs for debugging.
+        # The stable Ultralytics work dir is intermediate only (the model for resume and final
+        # selection rides the Ray checkpoints), so drop it on completion to bound disk growth.
+        # A pruned trial's SystemExit skips this, so pruned/errored trials keep theirs for debugging.
         shutil.rmtree(output_dir, ignore_errors=True)
         return {}
 
@@ -306,30 +331,31 @@ class YOLOTuner:
         )
         optuna_search = ConcurrencyLimiter(optuna_search, max_concurrent=self.max_concurrent_trials)
 
-        # Current epoch for running trials; best epoch for completed ones (terminal report).
+        # `model` (basename of model_size) is reported as a metric so the table shows the
+        # readable arch name (yolo11s-p2.yaml) rather than the full config path. Current epoch
+        # for running trials; best epoch for completed ones (terminal report).
         metric_columns = [
-            "step", "epoch", "val_loss",
+            "model", "step", "epoch", "val_loss",
             "val_precision", "val_recall", "val_f1", "val_mAP50", "objective", "objective_best"
         ]
-        parameter_columns = [
-            "model_size", "optimizer", "lr0", "box_gain", "scale", "degrees", "flipud"
-        ]
-        if is_notebook():
-            reporter = tune.JupyterNotebookReporter(
-                metric_columns=metric_columns,
-                parameter_columns=parameter_columns,
-                max_progress_rows=50,
-                max_column_length=40,
-                sort_by_metric=True
-            )
-        else:
-            reporter = tune.CLIReporter(
-                metric_columns=metric_columns,
-                parameter_columns=parameter_columns,
-                max_progress_rows=50,
-                max_column_length=40,
-                sort_by_metric=True
-            )
+        # Report every searched hyperparameter, in config order -- the table mirrors the full
+        # trial config instead of a hand-picked subset that silently drifts as the search space
+        # changes. model_size is surfaced via the `model` metric column above (basename only),
+        # so it's dropped here to keep the long path out of the table. Keys come straight from
+        # param_space, so each column is present in every trial's config (no best-trial KeyError).
+        parameter_columns = [k for k in param_space if k != "model_size"]
+        reporter_kwargs = dict(
+            metric_columns=metric_columns,
+            parameter_columns=parameter_columns,
+            max_progress_rows=50,
+            max_column_length=20,  # values are now short (model basename ~15 chars, the rest numeric)
+            # verbose=1 (below) silences Ray's per-epoch result dump but also stops rendering
+            # the trial table; force the table back on so the live grid still prints.
+            print_intermediate_tables=True,
+            sort_by_metric=True,
+        )
+        reporter = (tune.JupyterNotebookReporter(**reporter_kwargs) if is_notebook()
+                    else tune.CLIReporter(**reporter_kwargs))
         reporter.should_report = types.MethodType(_should_report_on_trial_start, reporter)
 
         max_concurrent = self.max_concurrent_trials
@@ -358,6 +384,10 @@ class YOLOTuner:
             run_config=tune.RunConfig(
                 name=run_name,
                 progress_reporter=reporter,
+                # Silence Ray's per-epoch "Result for <trial>" dump; the trial-end best-epoch
+                # chunk we print in train_yolo_with_ray replaces it. The grid is kept alive via
+                # the reporter's print_intermediate_tables.
+                verbose=1,
                 storage_path=str(Path(self.outputs_dir).resolve()),  # trials nest under run_<ts>/tune/
                 # No retries: the in-memory step optimizer/LR handoff isn't checkpointed.
                 failure_config=tune.FailureConfig(max_failures=0),
