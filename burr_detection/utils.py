@@ -320,16 +320,7 @@ def init_distributed_mode(args):
 
 
 def apply_nms(detections: List[Dict], iou_threshold: float = 0.45) -> List[Dict]:
-    """
-    Apply Non-Maximum Suppression to remove duplicate detections
-    
-    Args:
-        detections: List of detection dicts with 'box', 'confidence', 'label'
-        iou_threshold: IoU threshold for NMS
-        
-    Returns:
-        Filtered list of detections
-    """
+    """Non-Maximum Suppression over detection dicts ('box', 'confidence', 'label')."""
     if len(detections) == 0:
         return []
     
@@ -378,20 +369,10 @@ def convert_tuning_space(space):
 
 
 def compute_composite_objective(val_loss, f1, map50, score_weights):
-    """Composite tuning/selection objective (lower is better): a weighted blend
-    of validation loss and gain-invariant quality metrics.
-
-    Returns:
-        score_weights['loss']*val_loss
-        + score_weights['f1']*(1-f1)*10
-        + score_weights['map50']*(1-map50)*10
-
-    The *10 puts the unit-interval quality terms on a scale comparable to a
-    typical YOLO val_loss. Optimizing this instead of raw val_loss avoids the
-    confound where tuning box/cls/dfl gains directly rescales val_loss across
-    trials. Degenerate trials get a large
-    sentinel so the scheduler prunes them.
-    """
+    """Composite tuning/selection objective (lower better): score_weights['loss']*val_loss +
+    f1*(1-f1)*10 + map50*(1-map50)*10. The *10 scales the unit-interval quality terms to a
+    typical val_loss; using this instead of raw val_loss avoids the box/cls/dfl-gain confound.
+    Degenerate trials return a large sentinel so the scheduler prunes them."""
     val_loss = float(val_loss) if np.isfinite(val_loss) else float("inf")
     f1 = float(f1) if np.isfinite(f1) else 0.0
     map50 = float(map50) if np.isfinite(map50) else 0.0
@@ -513,15 +494,9 @@ def evaluate_test_set(
 
 
 def plot_ground_truth_vs_predictions(predictions, labels_dir, original_images_dir, save_dir=None, conf_threshold=0.5):
-    """
-    Plot ground truth vs predictions side by side for each test image using original resolution images
-    
-    Args:
-        predictions: List of tuples (image_path, detections) where detections is list of dicts
-        labels_dir: Path to directory containing YOLO label files (None for unlabeled inference)
-        original_images_dir: Path to directory containing original resolution images
-        save_dir: Directory to save plots (optional)
-        conf_threshold: Minimum confidence threshold to display boxes
+    """Plot GT vs predictions side by side per image (predictions only if labels_dir is None).
+
+    predictions: list of (image_path, detections); detections: list of box/confidence/label dicts.
     """
     if save_dir:
         save_dir = Path(save_dir)
@@ -624,103 +599,9 @@ def plot_ground_truth_vs_predictions(predictions, labels_dir, original_images_di
             plt.close(fig)
 
 
-def compute_gt_iou_statistics(labels_dir, tile_size: int = 224, glob_pattern: str = "*.txt") -> Dict:
-    """Compute pairwise IoU between GT boxes within each label tile.
-
-    Helps pick an NMS IoU just above the maximum GT-GT overlap so two genuinely
-    distinct burrs are never suppressed as duplicates. Prints percentiles plus a
-    suggested threshold and returns a stats dict. Operates on YOLO bbox labels
-    (cls cx cy w h, normalized); run it on the training labels as a one-off.
-    """
-    labels_dir = Path(labels_dir)
-    label_files = sorted(labels_dir.glob(glob_pattern))
-    all_ious = []
-    tiles_with_multi = 0
-
-    for lf in label_files:
-        boxes = []
-        for line in lf.read_text().splitlines():
-            parts = line.split()
-            if len(parts) < 5:
-                continue
-            cx, cy, w, h = (float(v) for v in parts[1:5])
-            px_cx, px_cy, px_w, px_h = cx * tile_size, cy * tile_size, w * tile_size, h * tile_size
-            boxes.append((px_cx - px_w / 2, px_cy - px_h / 2, px_cx + px_w / 2, px_cy + px_h / 2))
-        if len(boxes) < 2:
-            continue
-        tiles_with_multi += 1
-        for i in range(len(boxes)):
-            for j in range(i + 1, len(boxes)):
-                ax1, ay1, ax2, ay2 = boxes[i]
-                bx1, by1, bx2, by2 = boxes[j]
-                inter = max(0.0, min(ax2, bx2) - max(ax1, bx1)) * max(0.0, min(ay2, by2) - max(ay1, by1))
-                union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
-                iou = inter / union if union > 0 else 0.0
-                if iou > 0:
-                    all_ious.append(iou)
-
-    if not all_ious:
-        print("No overlapping GT box pairs found; any NMS IoU works. Suggesting 0.5.")
-        return {"count": 0, "max": 0.0, "suggested_nms_iou": 0.5}
-
-    arr = np.array(all_ious)
-    stats = {
-        "count": int(arr.size),
-        "tiles_with_multi_obj": tiles_with_multi,
-        "max": float(arr.max()),
-        "p99": float(np.percentile(arr, 99)),
-        "p95": float(np.percentile(arr, 95)),
-        "p90": float(np.percentile(arr, 90)),
-        "median": float(np.median(arr)),
-        "mean": float(arr.mean()),
-    }
-    stats["suggested_nms_iou"] = float(min(0.7, stats["max"] + 0.05))
-    print(f"Pairwise GT IoU over {len(label_files)} tiles ({tiles_with_multi} with >=2 boxes):")
-    for k in ("count", "max", "p99", "p95", "p90", "median", "mean"):
-        v = stats[k]
-        print(f"  {k}: {v:.4f}" if isinstance(v, float) else f"  {k}: {v}")
-    print(f"  Suggested NMS IoU (max + 0.05, capped at 0.7): {stats['suggested_nms_iou']:.3f}")
-    return stats
-
-
-def export_predictions_as_yolo(model_path, image_paths, output_dir,
-                               conf_threshold: float = 0.5, iou_threshold: float = 0.45) -> int:
-    """Run a detector over images and save predictions as YOLO txt + confidence.
-
-    Each line: 'class conf cx cy w h' (normalized). Useful for seeding an
-    annotation-review / active-learning loop. Detection-only.
-    """
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    model = YOLO(model_path)
-    image_paths = list(image_paths)
-    results = model.predict(image_paths, conf=conf_threshold, iou=iou_threshold,
-                            imgsz=_native_imgsz(image_paths), verbose=False)
-
-    n_written = 0
-    for img_path, pred in zip(image_paths, results):
-        lines = []
-        if pred.boxes is not None and len(pred.boxes) > 0:
-            xywhn = boxes_to_numpy(pred.boxes.xywhn)
-            confs = boxes_to_numpy(pred.boxes.conf)
-            clss = boxes_to_numpy(pred.boxes.cls).astype(int) if hasattr(pred.boxes, 'cls') else np.zeros(len(xywhn), int)
-            for (cx, cy, w, h), c, cl in zip(xywhn, confs, clss):
-                lines.append(f"{int(cl)} {float(c):.6f} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}")
-        (output_dir / f"{Path(img_path).stem}.txt").write_text("\n".join(lines))
-        n_written += 1
-
-    print(f"Wrote {n_written} prediction files to {output_dir}")
-    return n_written
-
-
 def analyze_ray_results(experiment_dir, output_dir=None, top_n: int = 10):
-    """Summarize Ray Tune trial outputs: top trials, HP importance, objective curves.
-
-    Reads each ``trial_*/progress.csv`` + ``params.json`` under ``experiment_dir``,
-    ranks by the per-trial best ``objective``, prints the top-N, computes Spearman
-    HP importance vs objective, and saves a summary CSV + plots. Best-effort and
-    guarded so it never breaks a tuning run.
-    """
+    """Summarize Ray Tune outputs: rank trials by best objective, Spearman HP importance, and
+    objective curves; saves a summary CSV + plots. Best-effort -- never breaks a tuning run."""
     import json as _json
 
     experiment_dir = Path(experiment_dir)
@@ -806,13 +687,8 @@ def analyze_ray_results(experiment_dir, output_dir=None, top_n: int = 10):
 
 def plot_dataset_samples(split_txt, labels_dir, save_dir, num_samples: int = 8,
                          seed: int = 666, class_names=None):
-    """Save a few sample tiles with their YOLO bbox labels overlaid.
-
-    Use this to eyeball, before training, that images and labels line up and that
-    the data YOLO will ingest looks right. Reads image paths from a split .txt
-    (one path per line), loads each EXIF-aware, draws its normalized bbox labels,
-    and writes a PNG per sample. Returns the list of plotted image stems.
-    """
+    """Save sample tiles from a split .txt with their YOLO bbox labels overlaid, to eyeball
+    image/label alignment before training. Returns the list of plotted image stems."""
     split_txt = Path(split_txt)
     labels_dir = Path(labels_dir)
     save_dir = Path(save_dir)
@@ -863,85 +739,6 @@ def plot_dataset_samples(split_txt, labels_dir, save_dir, num_samples: int = 8,
     return plotted
 
 
-def compute_fn_audit(images_dir, labels_dir, model_path, output_dir,
-                     conf_threshold: float = 0.4, iou_threshold: float = 0.5,
-                     top_k_plots: int = 24, batch_size: int = 64):
-    """Report (do NOT apply) where the existing model and the labels disagree.
-
-    Runs `model_path` over the tiles and compares its burr count to the labeled
-    count per tile and per tree. Tiles where the model finds many MORE burrs than
-    labeled are candidate false-negative regions; far FEWER may be over-labeling.
-    Writes ranked CSVs + label-vs-prediction overlay plots for the largest
-    disagreements. Advisory only: the model was trained on the under-labeled data,
-    so its predictions are a hint for human triage, not ground truth — nothing is
-    relabeled here.
-    """
-    images_dir, labels_dir, output_dir = Path(images_dir), Path(labels_dir), Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    model = YOLO(model_path)
-
-    img_files = sorted(list(images_dir.glob("*.jpg")) + list(images_dir.glob("*.png")))
-    imgsz = _native_imgsz(img_files)
-    rows, preds = [], {}
-    for start in range(0, len(img_files), max(1, batch_size)):
-        batch = img_files[start:start + batch_size]
-        results = model.predict([str(f) for f in batch], conf=conf_threshold,
-                                iou=iou_threshold, imgsz=imgsz, verbose=False)
-        for f, r in zip(batch, results):
-            n_pred = int(len(r.boxes)) if r.boxes is not None else 0
-            lf = labels_dir / f"{f.stem}.txt"
-            n_lab = sum(1 for ln in lf.read_text().splitlines() if ln.strip()) if lf.exists() else 0
-            rows.append({"tile": f.stem, "tree": f.stem.rsplit("_", 2)[0],
-                         "labeled": n_lab, "predicted": n_pred, "diff": n_pred - n_lab})
-            preds[f.stem] = r
-
-    df = pd.DataFrame(rows)
-    if df.empty:
-        print("FN audit: no tiles found.")
-        return df
-    df["abs_diff"] = df["diff"].abs()
-    df.sort_values("abs_diff", ascending=False).to_csv(output_dir / "fn_audit_tiles.csv", index=False)
-
-    tree = df.groupby("tree").agg(labeled=("labeled", "sum"), predicted=("predicted", "sum")).reset_index()
-    tree["diff"] = tree["predicted"] - tree["labeled"]
-    tree.sort_values("diff", ascending=False).to_csv(output_dir / "fn_audit_trees.csv", index=False)
-
-    plot_dir = output_dir / "fn_audit_plots"
-    plot_dir.mkdir(exist_ok=True)
-    for _, row in df.sort_values("diff", ascending=False).head(top_k_plots).iterrows():
-        stem = row["tile"]
-        r = preds.get(stem)
-        if r is None:
-            continue
-        img = np.array(ImageOps.exif_transpose(Image.open(images_dir / f"{stem}.jpg")).convert("RGB"))
-        h, w = img.shape[:2]
-        fig, ax = plt.subplots(figsize=(5, 5))
-        ax.imshow(img)
-        ax.axis("off")
-        lf = labels_dir / f"{stem}.txt"
-        if lf.exists():
-            for ln in lf.read_text().splitlines():
-                p = ln.split()
-                if len(p) < 5:
-                    continue
-                cx, cy, bw, bh = (float(v) for v in p[1:5])
-                ax.add_patch(patches.Rectangle(((cx - bw / 2) * w, (cy - bh / 2) * h), bw * w, bh * h,
-                                               lw=1.0, edgecolor="red", facecolor="none"))
-        if r.boxes is not None and len(r.boxes) > 0:
-            for b in r.boxes.xyxyn.cpu().numpy():
-                ax.add_patch(patches.Rectangle((b[0] * w, b[1] * h), (b[2] - b[0]) * w, (b[3] - b[1]) * h,
-                                               lw=1.0, edgecolor="yellow", facecolor="none"))
-        ax.set_title(f"{stem}\nlabeled={int(row['labeled'])} (red)  pred={int(row['predicted'])} (yellow)", fontsize=8)
-        fig.savefig(plot_dir / f"{stem}.png", dpi=120, bbox_inches="tight")
-        plt.close(fig)
-
-    likely_fn = int((df["diff"] > 2).sum())
-    print(f"FN audit (advisory, not applied): {len(df)} tiles | labeled {int(df['labeled'].sum())} "
-          f"vs predicted {int(df['predicted'].sum())} | {likely_fn} tiles where model finds >2 more "
-          f"than labeled | report -> {output_dir}")
-    return df
-
-
 def _native_imgsz(image_paths, default: int = 224) -> int:
     """Native tile size (square tiles) for predict/val -- run at tile resolution, no resize.
     Mirrors training.py, which sets imgsz from the tile width."""
@@ -951,112 +748,3 @@ def _native_imgsz(image_paths, default: int = 224) -> int:
         except Exception:
             continue
     return default
-
-
-def augment_labels_with_model(tiled_dir, model_path, split: str = "train", conf: float = 0.4,
-                              containment_thresh: float = 0.6, batch_size: int = 64,
-                              imgsz: int = None, viz_dir=None, viz_n: int = 12, seed: int = 666):
-    """Add high-confidence model predictions as new burr labels (recover false
-    negatives) for the given split — additions only, never removes labels.
-
-    For each tile in `split`, a prediction with confidence >= conf is appended only
-    if it is not the same burr as a box already kept (an original label OR an earlier
-    addition). "Same burr" is tested by CONTAINMENT — the fraction of the smaller box
-    inside the other >= containment_thresh — so a tight model box fully inside a loose
-    human box is treated as a duplicate (plain IoU misses this). The source polygon
-    labels are left intact and the tiled set is regenerable from `--mode preprocess`,
-    so this is reversible. If viz_dir is given, saves overlays of random augmented
-    tiles (red = original, lime = added). Returns (tiles_modified, boxes_added).
-    """
-    tiled_dir = Path(tiled_dir)
-    labels_dir, images_dir = tiled_dir / "labels", tiled_dir / "images"
-    stems = [Path(l.strip()).stem for l in (tiled_dir / f"{split}.txt").read_text().splitlines() if l.strip()]
-    paths = [images_dir / f"{s}.jpg" for s in stems if (images_dir / f"{s}.jpg").exists()]
-    model = YOLO(model_path)
-    imgsz = imgsz or _native_imgsz(paths)  # default native; augmentation may pass a higher imgsz for FN recall
-
-    def xyxy(cx, cy, w, h):
-        return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
-
-    def contained(a, b):
-        """Fraction of the SMALLER box that lies inside the other. Catches a tight
-        box fully inside a loose box (same burr), which plain IoU misses."""
-        ix1, iy1, ix2, iy2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
-        inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-        if inter <= 0:
-            return 0.0
-        smaller = min((a[2] - a[0]) * (a[3] - a[1]), (b[2] - b[0]) * (b[3] - b[1]))
-        return inter / smaller if smaller > 0 else 0.0
-
-    modified = added = 0
-    changes = {}  # stem -> (original_boxes, added_boxes) for verification
-    for start in range(0, len(paths), max(1, batch_size)):
-        batch = paths[start:start + batch_size]
-        results = model.predict([str(p) for p in batch], conf=conf, imgsz=imgsz, verbose=False)
-        for p, r in zip(batch, results):
-            lf = labels_dir / f"{p.stem}.txt"
-            orig = []
-            if lf.exists():
-                for ln in lf.read_text().splitlines():
-                    v = ln.split()
-                    if len(v) >= 5:
-                        orig.append(xyxy(*(float(x) for x in v[1:5])))
-            # Add a prediction only if it isn't the same burr as a box already kept
-            # (an original label OR an earlier addition), tested by containment.
-            kept = list(orig)
-            new_boxes = []
-            if r.boxes is not None and len(r.boxes) > 0:
-                for cx, cy, w, h in boxes_to_numpy(r.boxes.xywhn):
-                    nb = xyxy(float(cx), float(cy), float(w), float(h))
-                    if all(contained(nb, k) < containment_thresh for k in kept):
-                        kept.append(nb)
-                        new_boxes.append(nb)
-            if not new_boxes:
-                continue
-            lf.write_text("\n".join(
-                f"0 {(x1 + x2) / 2:.6f} {(y1 + y2) / 2:.6f} {x2 - x1:.6f} {y2 - y1:.6f}"
-                for (x1, y1, x2, y2) in kept) + "\n")
-            changes[p.stem] = (orig, new_boxes)
-            added += len(new_boxes)
-            modified += 1
-
-    if viz_dir and changes:
-        viz_dir = Path(viz_dir)
-        viz_dir.mkdir(parents=True, exist_ok=True)
-        picks = random.Random(seed).sample(list(changes), min(viz_n, len(changes)))
-        for stem in picks:
-            existing, new_boxes = changes[stem]
-            img = np.array(ImageOps.exif_transpose(Image.open(images_dir / f"{stem}.jpg")).convert("RGB"))
-            h, w = img.shape[:2]
-            fig, ax = plt.subplots(figsize=(5, 5))
-            ax.imshow(img)
-            ax.axis("off")
-            for (x1, y1, x2, y2) in existing:
-                ax.add_patch(patches.Rectangle((x1 * w, y1 * h), (x2 - x1) * w, (y2 - y1) * h,
-                                               lw=1.0, edgecolor="red", facecolor="none"))
-            for (x1, y1, x2, y2) in new_boxes:
-                ax.add_patch(patches.Rectangle((x1 * w, y1 * h), (x2 - x1) * w, (y2 - y1) * h,
-                                               lw=1.2, edgecolor="blue", facecolor="none"))
-            ax.set_title(f"{stem}\noriginal={len(existing)} (red)  added={len(new_boxes)} (blue)", fontsize=8)
-            fig.savefig(viz_dir / f"{stem}.png", dpi=120, bbox_inches="tight")
-            plt.close(fig)
-
-    # Sidecar manifest of added boxes: keeps labels 5-field/clean while making augmentation auditable + reversible.
-    man_path = None
-    if changes:
-        manifest = {
-            "model": Path(model_path).name, "conf": conf, "split": split,
-            "tiles_modified": modified, "boxes_added": added,
-            "added_per_tile": {
-                stem: {"n_original": len(orig),
-                       "added": [[round((x1 + x2) / 2, 6), round((y1 + y2) / 2, 6),
-                                  round(x2 - x1, 6), round(y2 - y1, 6)] for (x1, y1, x2, y2) in new]}
-                for stem, (orig, new) in changes.items()},
-        }
-        man_path = Path(tiled_dir) / f"augmentation_manifest_{split}.json"
-        man_path.write_text(json.dumps(manifest, indent=2))
-
-    print(f"Augmented {split} labels (conf>={conf}): added {added} boxes across {modified} tiles"
-          f"{'; manifest -> ' + str(man_path) if man_path else ''}"
-          f"{'; overlays -> ' + str(viz_dir) if viz_dir else ''}")
-    return modified, added
