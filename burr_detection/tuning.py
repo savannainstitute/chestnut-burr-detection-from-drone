@@ -30,22 +30,13 @@ from burr_detection.utils import (set_seed, is_notebook, convert_tuning_space, g
                                   compute_composite_objective, analyze_ray_results)
 
 
-def _should_report_on_new_result(self, trials, done=False):
-    """Gate the status block on new results instead of Ray's wall-clock timer.
-
-    The stock reporter prints every ``max_report_frequency`` seconds, so its
-    table interleaves with YOLO's per-batch prints. Each trial calls tune.report
-    exactly once per epoch, so reporting only when the summed training_iteration
-    across trials advances yields one status block per epoch and none mid-epoch.
-    Bound onto the reporter instance, so it applies to whichever (CLI or Jupyter)
-    reporter is in use.
-    """
-    total_iters = sum(
-        int((t.last_result or {}).get("training_iteration", 0) or 0)
-        for t in trials
-    )
-    if done or total_iters > getattr(self, "_last_total_iters", -1):
-        self._last_total_iters = total_iters
+def _should_report_on_trial_start(self, trials, done=False):
+    """Print the status block once per trial (when a trial starts) plus once when the run
+    finishes. A new trial's table already shows the previous trial's completed result, so this
+    avoids a redundant second print at each trial boundary, and skips the per-epoch noise."""
+    started = sum(1 for t in trials if str(t.status) != "PENDING")
+    if done or started != getattr(self, "_last_started", 0):
+        self._last_started = started
         return True
     return False
 
@@ -114,6 +105,8 @@ class YOLOTuner:
         step_epochs_completed = 0
         total_epochs_so_far = 0
         yolo_checkpoint_path = None
+        objective_best_so_far = float("inf")  # per-trial running best (best-vs-last)
+        best_metrics = {}                     # snapshot of the best epoch's reported metrics
 
         if checkpoint:
             with checkpoint.as_directory() as checkpoint_dir:
@@ -127,31 +120,81 @@ class YOLOTuner:
                     start_step = max(0, checkpoint_state["current_step"] - 1)
                     step_epochs_completed = checkpoint_state["step_epochs_completed"]
                     total_epochs_so_far = checkpoint_state["total_epochs_so_far"]
+                    objective_best_so_far = checkpoint_state.get("objective_best", float("inf"))
+                    best_metrics = checkpoint_state.get("best_metrics", {})
 
                 if yolo_model_path.exists():
                     yolo_checkpoint_path = str(yolo_model_path)
 
         trial_dir = Path(session.get_trial_dir())
-        # Ultralytics' per-epoch last.pt/best.pt are unreliable inside Ray's trial/
-        # artifact tree on Windows -- Ray's artifact staging removes the large .pt
-        # files mid-trial, so the step handoff and Ultralytics' own post-train reload
-        # then fail (KeyError: 'model' / FileNotFoundError). Point Ultralytics at a
-        # stable dir under the outputs root (keyed by trial id) that the worker writes
-        # and reads back directly, so the weights persist. The model for resume +
-        # final selection rides the Ray checkpoints, not this dir.
+        # Ray's artifact staging removes large .pt files mid-trial on Windows, breaking the step
+        # handoff/reload; point Ultralytics at a stable per-trial dir instead. Resume + final
+        # selection ride the Ray checkpoints, not this dir.
         output_dir = Path(self.outputs_dir).resolve() / "_ultralytics_work" / trial_dir.name
         output_dir.mkdir(parents=True, exist_ok=True)
 
         def ray_tune_callback(metrics):
+            nonlocal objective_best_so_far, best_metrics
             current_step = getattr(trainer, 'current_step', 1)
             step_epoch = trainer.current_epoch
             total_epochs = getattr(trainer, 'total_epochs_so_far', 0) + step_epoch
+
+            report_metrics = {
+                'training_iteration': total_epochs,
+                'step': current_step,
+                'epoch': metrics['epoch'] if 'epoch' in metrics else total_epochs,
+                'train_loss': metrics['train_loss'] if 'train_loss' in metrics else 0.0,
+                'train_box_loss': metrics['train_box_loss'] if 'train_box_loss' in metrics else 0.0,
+                'train_cls_loss': metrics['train_cls_loss'] if 'train_cls_loss' in metrics else 0.0,
+                'train_dfl_loss': metrics['train_dfl_loss'] if 'train_dfl_loss' in metrics else 0.0,
+                'lr': metrics['lr'] if 'lr' in metrics else 0.0,
+                'val_precision': metrics['val_precision'] if 'val_precision' in metrics else 0.0,
+                'val_recall': metrics['val_recall'] if 'val_recall' in metrics else 0.0,
+                'val_f1': metrics['val_f1'] if 'val_f1' in metrics else 0.0,
+                'val_mAP50': metrics['val_mAP50'] if 'val_mAP50' in metrics else 0.0,
+                'val_fitness': metrics['val_fitness'] if 'val_fitness' in metrics else 0.0,
+                'val_loss': metrics['val_loss'] if 'val_loss' in metrics else 0.0,
+                'val_box_loss': metrics['val_box_loss'] if 'val_box_loss' in metrics else 0.0,
+                'val_cls_loss': metrics['val_cls_loss'] if 'val_cls_loss' in metrics else 0.0,
+                'val_dfl_loss': metrics['val_dfl_loss'] if 'val_dfl_loss' in metrics else 0.0
+            }
+
+            report_metrics['objective'] = compute_composite_objective(
+                report_metrics['val_loss'],
+                report_metrics['val_f1'],
+                report_metrics['val_mAP50'],
+                self.score_weights,
+            )
+
+            # Hold reporting during the post-unfreeze grace (steps > 1, first step_patience
+            # epochs) so ASHA can't prune a trial on the transition loss spike.
+            step_patience = int(metrics.get('step_patience', 0) or 0)
+            step_grace_active = current_step > 1 and step_epoch <= step_patience
+            if step_grace_active:
+                return
+
+            # Track running-min objective for ASHA/Optuna; snapshot the best epoch for the
+            # terminal report. Per-epoch rows keep current metrics for the live reporter.
+            if report_metrics['objective'] < objective_best_so_far:
+                objective_best_so_far = report_metrics['objective']
+                best_metrics = {
+                    'epoch': report_metrics['epoch'],
+                    'val_loss': report_metrics['val_loss'],
+                    'val_precision': report_metrics['val_precision'],
+                    'val_recall': report_metrics['val_recall'],
+                    'val_f1': report_metrics['val_f1'],
+                    'val_mAP50': report_metrics['val_mAP50'],
+                    'step': report_metrics['step'],
+                }
+            report_metrics['objective_best'] = objective_best_so_far
 
             checkpoint_data = {
                 "current_step": current_step,
                 "step_epochs_completed": step_epoch,
                 "total_epochs_so_far": total_epochs,
-                "training_iteration": total_epochs
+                "training_iteration": total_epochs,
+                "objective_best": objective_best_so_far,
+                "best_metrics": best_metrics,
             }
 
             with tempfile.TemporaryDirectory() as checkpoint_dir:
@@ -165,43 +208,6 @@ class YOLOTuner:
                         trainer.model.save(str(yolo_model_path))
                     except Exception:
                         pass
-
-                report_metrics = {
-                    'training_iteration': total_epochs,
-                    'step': current_step,
-                    'epoch': metrics['epoch'] if 'epoch' in metrics else total_epochs,
-                    'train_loss': metrics['train_loss'] if 'train_loss' in metrics else 0.0,
-                    'train_box_loss': metrics['train_box_loss'] if 'train_box_loss' in metrics else 0.0,
-                    'train_cls_loss': metrics['train_cls_loss'] if 'train_cls_loss' in metrics else 0.0,
-                    'train_dfl_loss': metrics['train_dfl_loss'] if 'train_dfl_loss' in metrics else 0.0,
-                    'lr': metrics['lr'] if 'lr' in metrics else 0.0,
-                    'val_precision': metrics['val_precision'] if 'val_precision' in metrics else 0.0,
-                    'val_recall': metrics['val_recall'] if 'val_recall' in metrics else 0.0,
-                    'val_f1': metrics['val_f1'] if 'val_f1' in metrics else 0.0,
-                    'val_mAP50': metrics['val_mAP50'] if 'val_mAP50' in metrics else 0.0,
-                    'val_fitness': metrics['val_fitness'] if 'val_fitness' in metrics else 0.0,
-                    'val_loss': metrics['val_loss'] if 'val_loss' in metrics else 0.0,
-                    'val_box_loss': metrics['val_box_loss'] if 'val_box_loss' in metrics else 0.0,
-                    'val_cls_loss': metrics['val_cls_loss'] if 'val_cls_loss' in metrics else 0.0,
-                    'val_dfl_loss': metrics['val_dfl_loss'] if 'val_dfl_loss' in metrics else 0.0
-                }
-
-                report_metrics['objective'] = compute_composite_objective(
-                    report_metrics['val_loss'],
-                    report_metrics['val_f1'],
-                    report_metrics['val_mAP50'],
-                    self.score_weights,
-                )
-
-                # Step-aware ASHA grace: during the first `step_patience` epochs
-                # after a freeze->unfreeze transition (steps > 1), hold reporting
-                # so ASHA can't prune a trial on the transition loss spike. Step 1
-                # is covered by ASHA's own grace_period, and always reporting it
-                # guarantees every trial has at least one objective row.
-                step_patience = int(metrics.get('step_patience', 0) or 0)
-                step_grace_active = current_step > 1 and step_epoch <= step_patience
-                if step_grace_active:
-                    return
 
                 try:
                     tune.report(
@@ -228,6 +234,21 @@ class YOLOTuner:
             )
         else:
             trainer.train(self.yolo_data_dir, config=config, output_dir=output_dir)
+
+        # Terminal report: flip a completed trial's reporter row to its best epoch. No
+        # checkpoint (don't shadow the selection checkpoint); training_iteration held so the
+        # epoch-sync reporter gate's running sum doesn't drop at termination.
+        if best_metrics:
+            try:
+                final_iter = getattr(trainer, 'total_epochs_so_far', 0) + getattr(trainer, 'current_epoch', 0)
+                tune.report({
+                    **best_metrics,
+                    'objective': objective_best_so_far,
+                    'objective_best': objective_best_so_far,
+                    'training_iteration': final_iter,
+                })
+            except Exception:
+                pass
 
         # The stable Ultralytics work dir is intermediate only (the model for resume
         # and final selection rides the Ray checkpoints), so drop it on completion to
@@ -258,8 +279,7 @@ class YOLOTuner:
     def run(self, run_name=None):
         """Run hyperparameter tuning with Ray Tune"""
 
-        # Ray >=2.7's new output engine ignores a passed-in reporter; opt back into
-        # the legacy one so our metric_columns/parameter_columns are honored.
+        # Opt into the legacy reporter so our metric_columns/parameter_columns are honored.
         os.environ["RAY_AIR_NEW_OUTPUT"] = "0"
 
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -280,15 +300,16 @@ class YOLOTuner:
         )
 
         optuna_search = OptunaSearch(
-            metric="objective",
+            metric="objective_best",
             mode="min",
             points_to_evaluate=self.points_to_evaluate,
         )
         optuna_search = ConcurrencyLimiter(optuna_search, max_concurrent=self.max_concurrent_trials)
 
+        # Current epoch for running trials; best epoch for completed ones (terminal report).
         metric_columns = [
             "step", "epoch", "val_loss",
-            "val_precision", "val_recall", "val_f1", "val_mAP50", "objective"
+            "val_precision", "val_recall", "val_f1", "val_mAP50", "objective", "objective_best"
         ]
         parameter_columns = [
             "model_size", "optimizer", "lr0", "box_gain", "scale", "degrees", "flipud"
@@ -309,9 +330,7 @@ class YOLOTuner:
                 max_column_length=40,
                 sort_by_metric=True
             )
-        # Report once per epoch (on a new result), not on Ray's wall-clock timer,
-        # so the status block doesn't interleave with YOLO's per-batch prints.
-        reporter.should_report = types.MethodType(_should_report_on_new_result, reporter)
+        reporter.should_report = types.MethodType(_should_report_on_trial_start, reporter)
 
         max_concurrent = self.max_concurrent_trials
         available_gpus = torch.cuda.device_count()
@@ -330,7 +349,7 @@ class YOLOTuner:
             tune.with_resources(self.train_yolo_with_ray, resources=resources),
             tune_config=tune.TuneConfig(
                 mode="min",
-                metric="objective",
+                metric="objective_best",
                 search_alg=optuna_search,
                 scheduler=asha_scheduler,
                 num_samples=self.num_samples,
@@ -340,8 +359,7 @@ class YOLOTuner:
                 name=run_name,
                 progress_reporter=reporter,
                 storage_path=str(Path(self.outputs_dir).resolve()),  # trials nest under run_<ts>/tune/
-                # No retries: a resumed trial would restart the step optimizer/LR
-                # handoff from zero (handoff state is in-memory only, not checkpointed).
+                # No retries: the in-memory step optimizer/LR handoff isn't checkpointed.
                 failure_config=tune.FailureConfig(max_failures=0),
             ),
             param_space=param_space
@@ -438,12 +456,8 @@ class YOLOTuner:
             self.best_trial_preds = None
 
     def _append_model_registry(self, best_obj_row, model_size):
-        """Append one row to a cross-run model registry CSV: a stable, sortable index
-        of every tuning winner (run, model, score, key metrics, weights path).
-
-        Accumulates across runs at registry_path (the dataset's outputs/ root). Never
-        raises -- a registry write must not abort an otherwise-finished tuning run.
-        """
+        """Append one row per tuning winner to a cross-run model registry CSV at registry_path.
+        Never raises -- a registry write must not abort an otherwise-finished tuning run."""
         if not self.registry_path:
             return
         try:
