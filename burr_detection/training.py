@@ -153,6 +153,19 @@ class YOLOTrainer:
     def train(self, yolo_data_dir, config=None, conf_threshold=0.5, iou_threshold=0.45, plot_mode='subset', outputs_dir=None, output_dir=None):
         if config is None:
             config = {}
+        # PyYAML loads bare sci-notation (`1e-5`) as str; coerce numeric hparams to float.
+        _numeric_hparams = (
+            "lr0", "lrf", "max_lr0", "max_scaled_lr", "lr_scale_power", "momentum",
+            "weight_decay", "warmup_momentum", "warmup_bias_lr", "box_gain", "cls_gain",
+            "dfl_gain", "hsv_h", "hsv_s", "hsv_v", "degrees", "scale", "shear",
+            "perspective", "mosaic", "mixup", "copy_paste", "flipud", "dropout",
+        )
+        for _k in _numeric_hparams:
+            if config.get(_k) is not None and not isinstance(config[_k], bool):
+                try:
+                    config[_k] = float(config[_k])
+                except (TypeError, ValueError):
+                    pass
         set_seed(666)
         os.environ['TQDM_DISABLE'] = '1'
         try:
