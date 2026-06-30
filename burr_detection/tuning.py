@@ -80,6 +80,7 @@ class YOLOTuner:
         outputs_dir="burr_detection/sample_data/training/outputs",
         warmstart=False,
         tal_topk=None,
+        step_transition_warmup_epochs=10.0,
         registry_path=None
     ):
         self.num_samples = num_samples
@@ -97,6 +98,7 @@ class YOLOTuner:
         self.outputs_dir = outputs_dir
         self.warmstart = warmstart
         self.tal_topk = tal_topk
+        self.step_transition_warmup_epochs = step_transition_warmup_epochs
         self.registry_path = registry_path
 
         self.results = None
@@ -238,7 +240,8 @@ class YOLOTuner:
             ray_tune_callback=ray_tune_callback,
             training_steps=self.training_steps,
             warmstart=self.warmstart,
-            tal_topk=self.tal_topk
+            tal_topk=self.tal_topk,
+            step_transition_warmup_epochs=self.step_transition_warmup_epochs
         )
 
         # Wrap training so the best-epoch chunk prints once at the end of EVERY trial. ASHA
