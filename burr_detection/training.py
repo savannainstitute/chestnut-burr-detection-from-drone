@@ -87,7 +87,7 @@ def set_trainable_layers(model, num_layers, runtime_model=None):
 
 
 class YOLOTrainer:
-    def __init__(self, model_size="yolo11n.pt", prints_per_epoch=5, ray_tune_callback=None, training_steps=None, score_weights=None, warmstart=False, tal_topk=None):
+    def __init__(self, model_size="yolo11n.pt", prints_per_epoch=5, ray_tune_callback=None, training_steps=None, score_weights=None, warmstart=False, tal_topk=None, step_transition_warmup_epochs=10.0):
         self.model = self._create_model(model_size, warmstart)
         self.model_size = model_size
         if tal_topk is not None:
@@ -100,7 +100,7 @@ class YOLOTrainer:
         self.current_step_patience = 0
         # Carry best-epoch optimizer state across each progressive-unfreeze step, and
         # warm the learning rate up over this many epochs at each step transition.
-        self.step_transition_warmup_epochs = 5.0
+        self.step_transition_warmup_epochs = float(step_transition_warmup_epochs)
         self._pending_handoff_snapshot = None
         self._pending_model_handoff_state = None
         self._current_step_best_snapshot = None
@@ -344,7 +344,7 @@ class YOLOTrainer:
             )
             self._pending_handoff_snapshot = deepcopy(self._current_step_best_snapshot)
             self._pending_model_handoff_state = self._current_step_best_model_state
-            total_epochs += getattr(results, 'epoch', epochs_to_run)
+            total_epochs += self.current_epoch  # actual epochs run this step, not the max_epochs cap
         print("\n" + "=" * 80)
         print(f"Training complete - {total_epochs} epochs")
         print("=" * 80)
@@ -498,6 +498,15 @@ class YOLOTrainer:
     def _on_fit_epoch_end(self, trainer):
         """Snapshot the optimizer state at the best-objective epoch of the current
         step, to hand off to the next (more-unfrozen) step."""
+        # Step-transition grace: the unfreeze LR ramp briefly spikes val loss; without this,
+        # Ultralytics' EarlyStopping anchors "best" to a pre-spike epoch and kills the step
+        # mid-recovery. Hold its anchor at the current epoch through the warmup of steps > 1.
+        stopper = getattr(trainer, "stopper", None)
+        grace_epochs = max(1, int(math.ceil(self.step_transition_warmup_epochs)))
+        if stopper is not None and self.current_step > 1 and self.current_epoch <= grace_epochs:
+            stopper.best_epoch = self.current_epoch
+            stopper.best_fitness = float(getattr(trainer, "fitness", 0.0) or 0.0)
+            trainer.stop = False
         vm = self.validation_metrics
         if not isinstance(vm, dict) or "val_loss" not in vm:
             return
