@@ -422,7 +422,7 @@ class YOLOTuner:
             best_obj_idx = best_overall_trial.metrics_dataframe['objective'].idxmin()
             best_obj_row = best_overall_trial.metrics_dataframe.loc[best_obj_idx]
             checkpoint_dir_name = best_obj_row['checkpoint_dir_name']
-            model_size = str(best_obj_row.get('config/model_size', 'yolo_model')).replace('.pt', '')
+            model_size = Path(str(best_obj_row.get('config/model_size', 'yolo_model'))).stem
 
             best_trial_dir = Path(best_overall_trial.path)
             checkpoint_dir = best_trial_dir / checkpoint_dir_name
