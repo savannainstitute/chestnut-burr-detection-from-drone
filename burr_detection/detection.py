@@ -31,7 +31,8 @@ def run_training(args, config: Dict, run_dir, override_params=None):
         training_steps=config['training_steps'],
         score_weights=config.get('score_weights'),
         warmstart=config.get('warmstart', False),
-        tal_topk=config.get('tal_topk')
+        tal_topk=config.get('tal_topk'),
+        step_transition_warmup_epochs=config.get('step_transition_warmup_epochs', 10.0)
     )
 
     trainer.train(
@@ -70,6 +71,7 @@ def run_tuning(args, config: Dict, run_dir):
         outputs_dir=str(Path(run_dir) / "tune"),
         warmstart=config.get('warmstart', False),
         tal_topk=config.get('tal_topk'),
+        step_transition_warmup_epochs=config.get('step_transition_warmup_epochs', 10.0),
         # Cross-run winner index at the dataset's outputs/ root (accumulates over runs).
         registry_path=str(Path(config['data'].get(
             'outputs_dir', 'burr_detection/sample_data/training/outputs')) / 'model_registry.csv')
