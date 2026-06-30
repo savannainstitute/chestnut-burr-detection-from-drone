@@ -21,19 +21,19 @@ training_steps:  # physical batch capped at 64 (avoids the GPU OOM/wedge); accum
 training_params: # best-known hparams for `--mode train`; seeds tuning trial 0 only if ray_tune.warm_start: true (off below)
   - model_size: burr_detection/model_cfgs/yolo11m-p2.yaml
     optimizer: SGD
-    lr0: 0.00146845
-    lrf: 0.0450466
-    momentum: 0.950052
-    weight_decay: 0.00392713
-    box_gain: 7.71682
-    cls_gain: 0.815167
-    dfl_gain: 2.20396
-    hsv_h: 0.00119668
-    hsv_s: 0.202366
-    hsv_v: 0.189339
-    degrees: 79.6118
-    scale: 0.453758
-    flipud: 0.0559101 
+    lr0: 0.00510715
+    lrf: 0.0289483
+    momentum: 0.856984
+    weight_decay: 0.00595521
+    box_gain: 4.43355
+    cls_gain: 0.558588
+    dfl_gain: 1.52228
+    hsv_h: 0.00492289
+    hsv_s: 0.273708
+    hsv_v: 0.117063
+    degrees: 49.9816
+    scale: 0.346667
+    flipud: 0.249784
 
 # Composite objective for tuning + best-model selection.
 # Optimizes a gain-invariant blend instead of raw val_loss (which is confounded
@@ -55,29 +55,33 @@ lr_reference_effective_batch: 64
 lr_scale_power: 0.5
 max_lr0: 0.01
 max_scaled_lr: 0.03
+step_transition_warmup_epochs: 10   # LR warmup epochs at each unfreeze transition (gentler ramp = smaller spike)
 
 # Tuning-results analysis plots written at the end of a tuning run.
 analysis:
   enabled: true
   top_n: 10
 
+# Revised from the run_20260625 150-trial analysis. SGD swept the top 20; the "s" archs were
+# dominated; box/cls gain move only the gain-scaled val_loss (no f1/mAP50 effect) so they're pinned;
+# momentum railed at its floor and hsv_h/hsv_s at their ceilings; the rest converged tight.
 tuning_space:
-  model_size: ["yolov8s-p2.yaml", "yolov8m-p2.yaml",
-               "burr_detection/model_cfgs/yolo11s-p2.yaml", "burr_detection/model_cfgs/yolo11m-p2.yaml"]
-  optimizer: ["AdamW", "SGD", "Adam"]
-  lr0: {"loguniform": [0.0005, 0.01]}
-  lrf: {"loguniform": [0.001, 0.1]} # fraction of initial lr (decays towards lrf*lr0)
-  momentum: {"uniform": [0.85, 0.98]}
-  weight_decay: {"loguniform": [0.0001, 0.01]}
-  box_gain: {"uniform": [4.0, 16.0]}     # widened upper bound toward localization for small/dense burrs
-  cls_gain: {"uniform": [0.5, 2.0]}
-  dfl_gain: {"uniform": [1.5, 6.0]}      # widened toward sharper box-distribution localization
-  hsv_h: {"uniform": [0.001, 0.005]}
-  hsv_s: {"uniform": [0.1, 0.3]}
-  hsv_v: {"uniform": [0.1, 0.25]}
-  degrees: {"uniform": [0.0, 180.0]}   # nadir imagery: rotation is free + fully valid
-  scale: {"uniform": [0.2, 0.5]}        # moderate -- high scale shrinks small burrs out of existence
-  flipud: {"uniform": [0.0, 0.5]}       # vertical flip prob -- nadir imagery has no canonical "up"
+  model_size: ["yolov8m-p2.yaml", "yolov8l-p2.yaml",
+               "burr_detection/model_cfgs/yolo11m-p2.yaml", "burr_detection/model_cfgs/yolo11l-p2.yaml"]
+  optimizer: ["SGD"]
+  lr0: {"loguniform": [0.002, 0.006]}    # converged ~0.003
+  lrf: {"loguniform": [0.01, 0.05]}      # converged ~0.026
+  momentum: {"uniform": [0.80, 0.95]}    # railed at the old 0.85 floor -> open downward
+  weight_decay: {"loguniform": [0.003, 0.02]}   # wanted high -> lift the ceiling
+  box_gain: [4.43]      # pinned: detection-neutral, only scales val_loss
+  cls_gain: [0.56]      # pinned: same
+  dfl_gain: {"uniform": [0.8, 3.0]}      # real localization effect, railed at the old 1.5 floor
+  hsv_h: {"uniform": [0.002, 0.01]}      # railed at the old 0.005 ceiling
+  hsv_s: {"uniform": [0.2, 0.5]}         # railed at the old 0.3 ceiling
+  hsv_v: {"uniform": [0.1, 0.18]}        # converged low
+  degrees: {"uniform": [30.0, 75.0]}     # converged ~50 despite the old [0,180] range
+  scale: {"uniform": [0.3, 0.45]}        # converged ~0.355
+  flipud: {"uniform": [0.05, 0.35]}      # converged ~0.17
 
 ray_tune:
   num_samples: 150
