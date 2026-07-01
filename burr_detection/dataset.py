@@ -2,6 +2,7 @@
 Preprocessing utilities for YOLO burr detection
 Handles dataset preparation, image tiling, and aggregating tree-level detections
 """
+import csv
 import numpy as np
 import random
 import re
@@ -500,3 +501,55 @@ def create_tiled_dataset(images_dir, labels_dir, output_dir, canopy_dir=None,
           f"low-canopy {stats['low_canopy']}, bg-dropped {stats['bg_dropped']}, "
           f"dup-boxes removed {stats['dedup_removed']}")
     return summary
+
+
+def tile_for_annotation(img_dir, canopy_dir, out_dir, tile_size=896, overlap=0.15,
+                        min_canopy_frac=0.15, jpeg_quality=95):
+    """Canopy-masked tiles of full-res images for manual annotation, plus a manifest mapping
+    each tile back to full-image pixel coords for aggregation:
+        full_x = crop_x0 + tile_x + box_x ; full_y = crop_y0 + tile_y + box_y
+    img_dir holds the source images; canopy_dir holds one YOLO-seg canopy polygon (.txt) per
+    image stem. Tiles below min_canopy_frac canopy (non-masked) pixels are dropped."""
+    img_dir, canopy_dir, out_dir = Path(img_dir), Path(canopy_dir), Path(out_dir)
+    out_img = out_dir / "images"
+    shutil.rmtree(out_dir, ignore_errors=True)  # clean re-run
+    out_img.mkdir(parents=True, exist_ok=True)
+    tiler = CanopyTiler(tile_size=tile_size, overlap=overlap)
+
+    rows = []
+    images = sorted(p for p in img_dir.glob("*")
+                    if p.is_file() and p.suffix.lower() in (".jpg", ".jpeg", ".png"))
+    for p in images:
+        with Image.open(p) as im:
+            full_w, full_h = im.size
+        poly = _largest_polygon_px(canopy_dir / f"{p.stem}.txt", full_w, full_h)
+        if not poly:
+            print(f"[tile] no canopy polygon: {p.stem}")
+            continue
+        crop_x0 = int(min(x for x, _ in poly))
+        crop_y0 = int(min(y for _, y in poly))
+        cropped = tiler.crop_canopy_from_polygon(p, poly)  # bbox crop + mask outside polygon
+        crop_h, crop_w = cropped.shape[:2]
+        tiles, info = tiler.tile_image(cropped)
+        kept = 0
+        for tile, meta in zip(tiles, info):
+            canopy_frac = float(np.any(tile != 0, axis=2).mean())
+            if canopy_frac < min_canopy_frac:
+                continue
+            tx, ty = int(meta["tile_x"]), int(meta["tile_y"])
+            fname = f"{p.stem}__x{tx}_y{ty}.jpg"
+            Image.fromarray(tile).save(out_img / fname, quality=jpeg_quality)
+            rows.append({
+                "tile_file": fname, "source_image": p.name, "full_w": full_w, "full_h": full_h,
+                "crop_x0": crop_x0, "crop_y0": crop_y0, "crop_w": crop_w, "crop_h": crop_h,
+                "tile_x": tx, "tile_y": ty, "tile_size": tile_size,
+                "canopy_frac": round(canopy_frac, 3),
+            })
+            kept += 1
+        print(f"[tile] {p.stem}: kept {kept}/{len(tiles)}")
+    with open(out_dir / "tile_manifest.csv", "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    print(f"[tile] {len(rows)} annotation tiles -> {out_img}")
+    return rows
