@@ -103,8 +103,7 @@ The ZIP unpacks to a `chestnut_burr_sample_data/` folder containing one subfolde
 ```
 chestnut-burr-detection-from-drone/
 ├── burr-detection.yml                  # Conda environment
-├── yolo11n.pt                          # YOLO11 nano base weights
-├── yolov8s.pt                          # YOLOv8 small base weights (default training_params)
+├── yolo11{n,s,m,l}.pt, yolov8{n,s,m,l}.pt  # YOLO base weights (warm-start pool for tune/train)
 │
 ├── flight_reconstruction/
 │   ├── reconstruction.py               # Metashape automation pipeline
@@ -466,36 +465,28 @@ python -m burr_detection.detection --mode train `
 
 **Performance**
 
-The detector is **YOLOv8/YOLO11** (small & medium); the tuning search explores each model with a baseline (stride-8) and a **P2 (stride-4) head** for small-object detection — see `tuning_space.model_size` in `config.yml`.
+The production detector is **YOLO11m with a P2 (stride-4) head** for small, dense burrs, warm-started from pretrained YOLO11m weights. The tuning search covers YOLOv8 and YOLO11 **medium and large** P2 variants — see `tuning_space.model_size` in `config.yml`.
 
-> The figures below are from the **prior production model**; metrics will change after re-tuning/training on the current (group-split, augmented) dataset.
-
-*Full dataset (production model)* — YOLOv8s on the held-out test split (174 images, 1,936 burrs), ~3.6 ms/img inference on an RTX 4060 Laptop GPU:
+Production model — YOLO11m-P2 (progressive 4-step) on the held-out test split (404 tiles at 224 px, 5,114 burrs), ~1.3 ms/img inference on an RTX 4090:
 
 | Precision | Recall | F1 | mAP50 | mAP50-95 |
 |-----------|--------|----|-------|----------|
-| 0.818 | 0.748 | 0.782 | 0.820 | 0.431 |
+| 0.878 | 0.864 | 0.871 | 0.935 | 0.642 |
 
-*The full multi-orchard training set is proprietary and not distributed here.*
+*Trained on the full multi-orchard set (proprietary, not distributed here). The bundled single-orchard sample is much smaller, so metrics from a sample-only run will be lower and vary noticeably run-to-run.*
 
-*Included sample dataset* — the single-orchard sample is small, so test metrics vary noticeably run-to-run (mAP50 ≈ 0.70–0.80). A representative run:
-
-| Precision | Recall | F1 | mAP50 |
-|-----------|--------|----|-------|
-| 0.791 | 0.743 | 0.767 | 0.801 |
-
-**Key `training_params` in `config.yml`** (default / tuned starting point):
+**Key `training_params` in `config.yml`** (the production model's tuned hyperparameters):
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `model_size` | `yolov8s.pt` | Base model |
-| `imgsz` | `416` | Input image size |
+| `model_size` | `yolo11m-p2.yaml` | YOLO11m + P2 head (warm-started from `yolo11m.pt`) |
 | `optimizer` | `SGD` | — |
-| `lr0` | `0.00754` | Initial learning rate |
-| `momentum` | `0.861` | SGD momentum |
-| `weight_decay` | `0.00800` | — |
-| `dropout` | `0.113` | — |
-| `mosaic` | `0.047` | Mosaic augmentation probability |
+| `lr0` / `lrf` | `0.0037` / `0.0327` | Initial LR; final-LR fraction (decays toward `lrf·lr0`) |
+| `momentum` | `0.943` | SGD momentum |
+| `weight_decay` | `0.00835` | — |
+| `box_gain` / `cls_gain` / `dfl_gain` | `4.43` / `0.56` / `0.80` | Loss gains (box/cls pinned during tuning; dfl tuned) |
+| `hsv_h` / `hsv_s` / `hsv_v` | `0.0070` / `0.491` / `0.156` | HSV augmentation |
+| `degrees` / `scale` / `flipud` | `49.9` / `0.386` / `0.081` | Geometric augmentation (nadir imagery) |
 
 ---
 
@@ -578,12 +569,6 @@ data:
 | `detection_summary.txt` | Summary stats: mean/min/max burrs per tree, overall confidence, model info |
 | `preprocessed_trees/` | Cropped canopy images (for visual verification of masking) |
 | `prediction_plots/` | Detection visualizations with bounding boxes |
-
-**Sample inference results** from included sample run (`best_yolo11s_model.pt`, conf=0.5, IoU=0.45):
-
-| Trees Processed | Total Detections | Mean Burrs/Tree | Min | Max | Avg Confidence |
-|-----------------|-----------------|-----------------|-----|-----|---------------|
-| 516 | 71,963 | 139 | 0 | 730 | 0.605 |
 
 ---
 
