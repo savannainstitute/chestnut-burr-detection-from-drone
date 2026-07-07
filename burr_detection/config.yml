@@ -21,19 +21,19 @@ training_steps:  # physical batch capped at 64 (avoids the GPU OOM/wedge); accum
 training_params: # best-known hparams for `--mode train`; seeds tuning trial 0 only if ray_tune.warm_start: true (off below)
   - model_size: burr_detection/model_cfgs/yolo11m-p2.yaml
     optimizer: SGD
-    lr0: 0.00510715
-    lrf: 0.0289483
-    momentum: 0.856984
-    weight_decay: 0.00595521
-    box_gain: 4.43355
-    cls_gain: 0.558588
-    dfl_gain: 1.52228
-    hsv_h: 0.00492289
-    hsv_s: 0.273708
-    hsv_v: 0.117063
-    degrees: 49.9816
-    scale: 0.346667
-    flipud: 0.249784
+    lr0: 0.00372977
+    lrf: 0.0326850
+    momentum: 0.943194
+    weight_decay: 0.00834569
+    box_gain: 4.43
+    cls_gain: 0.56
+    dfl_gain: 0.800343
+    hsv_h: 0.00700662
+    hsv_s: 0.490966
+    hsv_v: 0.156020
+    degrees: 49.9110
+    scale: 0.385502
+    flipud: 0.0811662
 
 # Composite objective for tuning + best-model selection.
 # Optimizes a gain-invariant blend instead of raw val_loss (which is confounded
