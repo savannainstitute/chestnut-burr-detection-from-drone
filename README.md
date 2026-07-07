@@ -68,7 +68,7 @@ The ZIP unpacks to a `chestnut_burr_sample_data/` folder containing one subfolde
 
 4. **Install Agisoft Metashape** (Windows wheel included in the repo):
    ```powershell
-   pip install flight_reconstruction/Metashape-2.2.2-cp37.cp38.cp39.cp310.cp311-none-win_amd64.whl
+   pip install flight_reconstruction/metashape-2.3.1-cp39.cp310.cp311.cp312.cp313-none-win_amd64.whl
    ```
 
 5. **Activate a Metashape Professional license.** See [Agisoft documentation](https://agisoft.freshdesk.com/support/solutions/articles/31000153171-how-to-activate-metashape-license) for license activation instructions.
@@ -109,7 +109,7 @@ chestnut-burr-detection-from-drone/
 │   ├── reconstruction.py               # Metashape automation pipeline
 │   ├── utils.py                        # GPS, export, filtering utilities
 │   ├── config.yml                      # Reconstruction parameters
-│   ├── Metashape-2.2.2-...-win_amd64.whl
+│   ├── metashape-2.3.1-...-win_amd64.whl
 │   └── sample_data/20230823_Orchard4/
 │       ├── DJI_*.JPG                   # Raw drone images (DJI Mavic 3M)
 │       ├── DJI_*_PPKNAV.nav/.obs/.bin  # PPK GNSS navigation files
@@ -580,7 +580,7 @@ data:
 - **Canopy segmentation:** One-to-one mapping between markers and canopies; touching or overlapping crowns are not automatically split without separate markers per crown and, as such, outputs usually require manual cleanup. ## TODO: instance segmentation from point cloud
 - **Image selection:** Does not account for occlusion of a canopy by adjacent trees or branches
 - **Tiling:** Tile size (224×224) and overlap (20%) match across preprocessing and inference; both are configurable via the `data.tiling` and `inference` keys in `config.yml`
-- **Metashape license:** Agisoft Metashape Professional is required for Steps 1 and 3; the included wheel is version 2.2.2
+- **Metashape license:** Agisoft Metashape Professional is required for Steps 1 and 3; the included wheel is version 2.3.1
 
 ---
 
