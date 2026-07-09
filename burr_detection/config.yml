@@ -86,6 +86,7 @@ tuning_space:
 ray_tune:
   num_samples: 150
   max_concurrent_trials: 1   # one trial at a time -- P2 + batch 64 needs ~12 GB; concurrency 2 OOMs yolo11m-p2 on 24 GB
+  keep_top_n: 5              # only this many trials' checkpoints (best-objective epoch each) stay on disk; the rest are reaped as trials finish
   # Seed trial 0 with training_params (warm start). Turn on once you have a config that
   # fits the current search space; leave off to explore from scratch.
   warm_start: false
