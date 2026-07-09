@@ -9,6 +9,7 @@ import tempfile
 import pickle
 from pathlib import Path
 import time
+import math
 import shutil
 import json
 import random
@@ -18,6 +19,7 @@ from collections.abc import Iterable
 
 import torch
 from ray import tune
+from ray.tune import Callback
 from ray.tune.schedulers import ASHAScheduler
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune.search import ConcurrencyLimiter
@@ -62,6 +64,38 @@ def _format_best_result_chunk(trial_name, m):
     ])
 
 
+class _CheckpointReaper(Callback):
+    """Keep only the top-N trials' checkpoints (by composite objective), reaping finished trials
+    below the cut. Never touches a running trial."""
+
+    def __init__(self, keep_top_n):
+        self.keep_top_n = max(1, int(keep_top_n))
+        self._best_obj = {}     # trial_id -> best (min) objective seen
+        self._trial_path = {}   # trial_id -> trial dir
+
+    def on_trial_result(self, iteration, trials, trial, result, **info):
+        self._trial_path[trial.trial_id] = trial.path
+        try:
+            obj = float(result.get("objective"))
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(obj) and obj < self._best_obj.get(trial.trial_id, float("inf")):
+            self._best_obj[trial.trial_id] = obj
+
+    def on_trial_complete(self, iteration, trials, trial, **info):
+        self._trial_path[trial.trial_id] = trial.path
+        self._best_obj.setdefault(trial.trial_id, float("inf"))  # objective-less trials rank last
+
+        # Reap the checkpoints of every finished trial ranked below the top N.
+        ranked = sorted(self._best_obj, key=lambda tid: self._best_obj[tid])
+        for tid in ranked[self.keep_top_n:]:
+            tpath = self._trial_path.get(tid)
+            if not tpath:
+                continue
+            for ckpt in Path(tpath).glob("checkpoint_*"):
+                shutil.rmtree(ckpt, ignore_errors=True)
+
+
 class YOLOTuner:
     def __init__(
         self,
@@ -81,6 +115,7 @@ class YOLOTuner:
         warmstart=False,
         tal_topk=None,
         step_transition_warmup_epochs=10.0,
+        keep_top_n=5,
         registry_path=None
     ):
         self.num_samples = num_samples
@@ -99,6 +134,7 @@ class YOLOTuner:
         self.warmstart = warmstart
         self.tal_topk = tal_topk
         self.step_transition_warmup_epochs = step_transition_warmup_epochs
+        self.keep_top_n = keep_top_n
         self.registry_path = registry_path
 
         self.results = None
@@ -321,11 +357,14 @@ class YOLOTuner:
             return f"trial_{trial.trial_id}"
 
         max_t = sum(step["max_epochs"] for step in self.training_steps)
+        # Step 1's patience is the ASHA grace window; clamp to max_t to satisfy grace <= max_t.
+        first_patience = self.training_steps[0].get("patience", max_t)
+        grace_period = max(1, min(first_patience, max_t))
         asha_scheduler = ASHAScheduler(
             time_attr="training_iteration",
             max_t=max_t,
-            grace_period=10,
-            reduction_factor=3
+            grace_period=grace_period,
+            reduction_factor=3  # canonical successive-halving factor (keep top third)
         )
 
         optuna_search = OptunaSearch(
@@ -396,11 +435,22 @@ class YOLOTuner:
                 storage_path=str(Path(self.outputs_dir).resolve()),  # trials nest under run_<ts>/tune/
                 # No retries: the in-memory step optimizer/LR handoff isn't checkpointed.
                 failure_config=tune.FailureConfig(max_failures=0),
+                # Keep only each trial's best-objective checkpoint (what winner-selection reads).
+                checkpoint_config=tune.CheckpointConfig(
+                    num_to_keep=1,
+                    checkpoint_score_attribute="objective",
+                    checkpoint_score_order="min",
+                ),
+                # ...and only the top-N trials' checkpoints across the run.
+                callbacks=[_CheckpointReaper(keep_top_n=self.keep_top_n)],
             ),
             param_space=param_space
         )
 
         self.results = tuner.fit()
+
+        # Drop the Ultralytics scratch dir now that every trial is done.
+        shutil.rmtree(Path(self.outputs_dir).resolve() / "_ultralytics_work", ignore_errors=True)
 
         if self.analysis_enabled:
             try:
@@ -430,6 +480,13 @@ class YOLOTuner:
             best_trial_dir = Path(best_overall_trial.path)
             checkpoint_dir = best_trial_dir / checkpoint_dir_name
             yolo_model_path = checkpoint_dir / "yolo_model.pt"
+            # Fall back to the trial's surviving checkpoint if a tie pruned the looked-up one.
+            if not yolo_model_path.exists():
+                yolo_model_path = next(
+                    (c / "yolo_model.pt" for c in sorted(best_trial_dir.glob("checkpoint_*"))
+                     if (c / "yolo_model.pt").exists()),
+                    yolo_model_path,
+                )
 
             self.best_model_path = self.best_output_dir / f"best_{model_size}_model.pt"
             shutil.copy2(yolo_model_path, self.best_model_path)
