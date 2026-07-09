@@ -72,6 +72,7 @@ def run_tuning(args, config: Dict, run_dir):
         warmstart=config.get('warmstart', False),
         tal_topk=config.get('tal_topk'),
         step_transition_warmup_epochs=config.get('step_transition_warmup_epochs', 10.0),
+        keep_top_n=config['ray_tune'].get('keep_top_n', 5),
         # Cross-run winner index at the dataset's outputs/ root (accumulates over runs).
         registry_path=str(Path(config['data'].get(
             'outputs_dir', 'burr_detection/sample_data/training/outputs')) / 'model_registry.csv')
